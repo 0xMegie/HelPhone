@@ -18,6 +18,8 @@
  *   reader.positions.latE6[0];
  */
 
+import { instrumentWasmMemory, recordParserAlloc } from "../lib/heapForensics.ts";
+
 const PAGE = 65536;
 const FUNCTIONS = { flatbuffers: "fb_positions", capnp: "capnp_positions" };
 
@@ -34,9 +36,17 @@ async function instantiate(source) {
 }
 
 export async function createWasmPositionReader(source, { initialCapacity = 1024, initialInputBytes = 256 * 1024 } = {}) {
+  // Labelled so traces attribute cold-start instantiate to wasm.init (#795).
+  const t0 = performance.now();
   const instance = await instantiate(source);
+  try {
+    performance.measure("wasm.init", { start: t0, end: performance.now() });
+  } catch {
+    /* measure unsupported */
+  }
   const ex = instance.exports;
-  const memory = ex.memory;
+  // Count linear-memory growth: WASM memory is invisible to heap snapshots (#793).
+  const memory = instrumentWasmMemory(ex.memory);
   const heapBase = (ex.__heap_base.value + 7) & ~7;
 
   let outCap = 0;
@@ -73,6 +83,8 @@ export async function createWasmPositionReader(source, { initialCapacity = 1024,
     const fn = ex[FUNCTIONS[format]];
     if (!fn) throw new Error(`WASM reader supports ${Object.keys(FUNCTIONS).join(", ")}, not "${format}"`);
     const bytes = input instanceof Uint8Array ? input : new Uint8Array(input.buffer ?? input, input.byteOffset ?? 0, input.byteLength);
+    // Every frame is copied into linear memory; account the copy (#793, #795).
+    recordParserAlloc(bytes.length);
     if (bytes.length > inCap) layout(outCap, Math.max(bytes.length, inCap * 2));
     if (bytesView.buffer !== memory.buffer) remap();
     bytesView.set(bytes, inPtr);

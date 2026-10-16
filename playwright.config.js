@@ -1,4 +1,11 @@
 import { defineConfig } from '@playwright/test'
+import { readFileSync } from 'node:fs'
+
+// Field profile shared with the perf-budget harness (#795) and synthetic/RUM
+// divergence (#796). One definition: perf-budget.json.
+const perfBudget = JSON.parse(readFileSync(new URL('./perf-budget.json', import.meta.url), 'utf8'))
+const FIELD = perfBudget.profile
+const PERF_SPECS = [/emergency-flow\.spec\.ts/, /smoke\.spec\.ts/, /perf-budget\.spec\.ts/]
 
 // Multi-resolution layout matrix — one project per device profile so a PR
 // check names the exact resolution it broke on. The specs themselves are
@@ -46,7 +53,7 @@ export default defineConfig({
     // larger timeout and would make the default suite crawl.
     {
       name: 'chromium',
-      testIgnore: [/throttling\.spec\.ts/, /layout\.spec\.ts/],
+      testIgnore: [/throttling\.spec\.ts/, /layout\.spec\.ts/, /perf-budget\.spec\.ts/],
       use: { browserName: 'chromium' },
     },
     {
@@ -54,6 +61,31 @@ export default defineConfig({
       testMatch: /throttling\.spec\.ts/,
       timeout: 180_000,
       use: { browserName: 'chromium' },
+    },
+    // ── Synthetic monitoring: same specs, two profiles ────────────
+    // Datacenter = unthrottled baseline; field = Moto G4 + Fast 3G + 4x CPU
+    // applied over CDP by tests/e2e/support/fieldProfile.ts. Both report to
+    // /api/telemetry/rum with source="synthetic" so deltas are visible.
+    {
+      name: 'synthetic-datacenter',
+      testMatch: PERF_SPECS,
+      metadata: { field: false },
+      use: { browserName: 'chromium' },
+    },
+    {
+      name: FIELD.name,
+      testMatch: PERF_SPECS,
+      timeout: 180_000,
+      metadata: { field: true },
+      use: {
+        browserName: 'chromium',
+        viewport: FIELD.viewport,
+        deviceScaleFactor: FIELD.deviceScaleFactor,
+        isMobile: true,
+        hasTouch: true,
+        userAgent:
+          'Mozilla/5.0 (Linux; Android 7.0; Moto G (4)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      },
     },
     // ── Multi-resolution visual layout matrix ─────────────────────
     layoutProject('layout-iphone-se', {

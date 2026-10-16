@@ -25,6 +25,17 @@ import {
 import { startMaintenanceScheduler } from "./db/maintenance.js";
 import { getMaintenanceConfig } from "./env.js";
 import { createPasskeyAuthRouter } from "./routes/passkey-auth.js";
+import { renderMetrics } from "./middleware/metrics.js";
+import {
+  divergenceHandler,
+  enforceKillSwitch,
+  flagsHandler,
+  forensicIngestHandler,
+  renderTelemetryMetrics,
+  rumIngestHandler,
+  setFlagsHandler,
+  telemetryErrorHandler,
+} from "./telemetry.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -143,9 +154,22 @@ app.get("/metrics", (req, res) => {
   if (token && req.get("authorization") !== `Bearer ${token}`) {
     return res.status(401).end();
   }
-  res.type("text/plain; version=0.0.4; charset=utf-8").send(renderMetrics());
+  res.type("text/plain; version=0.0.4; charset=utf-8").send(renderMetrics() + renderTelemetryMetrics());
 });
 app.post("/api/telemetry/errors", (req, res) => telemetryErrorHandler(req, res));
+// sendBeacon bodies may arrive as text/plain; parse those as JSON too (64KB cap).
+const beaconJson = express.json({ limit: "64kb", type: ["application/json", "text/plain"] });
+const telemetryKill = enforceKillSwitch("telemetry.upload");
+app.post("/api/telemetry/forensics", beaconJson, telemetryKill, forensicIngestHandler);
+app.post("/api/telemetry/rum", beaconJson, telemetryKill, rumIngestHandler);
+app.get("/api/telemetry/divergence", divergenceHandler);
+// Kill-switches (#797): poll fallback for clients + incident-command write path.
+app.get("/api/flags", flagsHandler);
+app.post("/api/flags", (req, res, next) => {
+  const token = process.env.FLAGS_ADMIN_TOKEN;
+  if (!token || req.get("authorization") !== `Bearer ${token}`) return res.status(401).end();
+  next();
+}, setFlagsHandler);
 
 // Behind a proxy (Render), req.ip is the proxy unless TRUST_PROXY is set to the
 // number of hops (e.g. "1"); whitelist matching and rate limiting both use it.
@@ -530,7 +554,7 @@ app.get("/api/feedback/:requestId", (req, res) => {
 // Mirror of the server/index.ts endpoint: inspects a contract function's
 // storage footprint via an RPC simulateTransaction call so clients can build
 // envelopes with the required read-only / read-write ledger keys pre-attached.
-app.post("/api/soroban/footprint/inspect", async (req, res) => {
+app.post("/api/soroban/footprint/inspect", enforceKillSwitch("soroban.submit"), async (req, res) => {
   try {
     const { contractId, functionName, args = [] } = req.body || {};
     if (typeof contractId !== "string" || !contractId)

@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BENCH_SCENARIOS, runTelemetryBench } from "../utils/telemetryBench.js";
+import { DivergencePanel, FlagsPanel, ForensicsPanel } from "./TelemetryLabPanels.jsx";
 
 const WASM_URL = new URL("../wasm/telemetry_reader.wasm", import.meta.url).href;
 const FRAME_SIZES = [100, 1000, 10000];
@@ -146,13 +147,17 @@ export default function TelemetryLab() {
                     <td style={cell}>{r.droppedFrames}</td>
                     <td style={cell}>{r.longFrames50ms}</td>
                     <td style={cell}>{r.rafIntervalMs?.p99}</td>
-                    <td style={cell}>{r.heapAfterMB ?? "—"}</td>
+                    <td style={cell}>{r.heapAfterMB ?? "n/a (not Chromium)"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
+
+        <ForensicsPanel />
+        <FlagsPanel />
+        <DivergencePanel />
       </div>
     </main>
   );

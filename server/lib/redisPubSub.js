@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 
 const CHANNEL = "helphone:contract-events:v1";
+// Kill-switch deltas (#797): versioned snapshots fanned out to every node so
+// each WS relay can push `flags.patch` instead of waiting for client polls.
+const FLAG_CHANNEL = "helphone:flags:v1";
 const localBus = new EventEmitter();
 let publisher;
 let subscriber;
@@ -16,6 +19,15 @@ export async function connectEventBus({ redisUrl = process.env.REDIS_URL } = {})
     publisher.on("error", (error) => console.error("[events:redis-publisher]", error.message));
     subscriber.on("error", (error) => console.error("[events:redis-subscriber]", error.message));
     subscriber.on("message", (channel, message) => {
+      if (channel === FLAG_CHANNEL) {
+        try {
+          const snapshot = JSON.parse(message);
+          if (isFlagSnapshot(snapshot)) localBus.emit("flags", snapshot);
+        } catch (error) {
+          console.error("[flags:redis] discarded malformed snapshot", error.message);
+        }
+        return;
+      }
       if (channel !== CHANNEL) return;
       try {
         const event = JSON.parse(message);
@@ -24,7 +36,7 @@ export async function connectEventBus({ redisUrl = process.env.REDIS_URL } = {})
         console.error("[events:redis] discarded malformed event", error.message);
       }
     });
-    await subscriber.subscribe(CHANNEL);
+    await subscriber.subscribe(CHANNEL, FLAG_CHANNEL);
     return true;
   })().catch((error) => {
     publisher?.disconnect();
@@ -58,6 +70,25 @@ export async function publishContractEvent(event) {
 export function subscribeContractEvents(handler) {
   localBus.on("event", handler);
   return () => localBus.off("event", handler);
+}
+
+export function isFlagSnapshot(value) {
+  return value && typeof value === "object" &&
+    typeof value.version === "string" && /^\d{1,15}$/.test(value.version) &&
+    value.kills && typeof value.kills === "object" && !Array.isArray(value.kills) &&
+    Object.keys(value.kills).length <= 64 &&
+    Object.entries(value.kills).every(([k, v]) => /^[a-zA-Z][\w.]{0,63}$/.test(k) && typeof v === "boolean");
+}
+
+export async function publishFlagSnapshot(snapshot) {
+  if (!isFlagSnapshot(snapshot)) throw new TypeError("Invalid flag snapshot");
+  if (publisher) await publisher.publish(FLAG_CHANNEL, JSON.stringify(snapshot));
+  else localBus.emit("flags", snapshot);
+}
+
+export function subscribeFlagSnapshots(handler) {
+  localBus.on("flags", handler);
+  return () => localBus.off("flags", handler);
 }
 
 export async function closeEventBus() {

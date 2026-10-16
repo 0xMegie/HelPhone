@@ -20,6 +20,7 @@
  *   );
  */
 
+import { installWorkerHooks } from "./workerSupervision.js";
 import {
   buildContractionHierarchy,
   buildGraphFromGeoJSON,
@@ -179,6 +180,8 @@ if (
   typeof window === "undefined"
 ) {
   const state = createRoutingState();
+  // Error/heartbeat parity for null-origin workers (#793).
+  installWorkerHooks(self, "routingWorker");
   self.onmessage = (event) => {
     const { reply: out, transfer } = handleRoutingMessage(state, event.data);
     self.postMessage(out, transfer);

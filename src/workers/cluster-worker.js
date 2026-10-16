@@ -1,3 +1,4 @@
+import { installWorkerHooks } from "./workerSupervision.js";
 const FANOUT = 16;
 let tree = [];
 let pointCount = 0;
@@ -42,6 +43,8 @@ function search(bounds) {
   return found;
 }
 
+// Error/heartbeat parity for null-origin workers (#793).
+installWorkerHooks(self, "cluster-worker");
 self.onmessage = ({ data }) => {
   try {
     if (data.type === 'load') {

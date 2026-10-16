@@ -2,6 +2,7 @@
 // Runs the grid stage off the main thread when neither WebGPU nor a
 // float-blendable WebGL2 context is available.
 
+import { installWorkerHooks } from "./workerSupervision.js";
 import { binPoints } from "../lib/spatialCluster/cpuGridCluster.js";
 import {
   clusterWorkerInboundSchema,
@@ -15,6 +16,8 @@ import {
 // worker is launched through the same-origin fallback path.
 installWorkerLockdown();
 
+// Error/heartbeat parity for null-origin workers (#793).
+installWorkerHooks(self, "clusterWorker");
 self.onmessage = (event) => {
   // Worker sandbox, layer 3: only binning jobs in the documented shape are
   // accepted, and only binning results in the documented shape are returned.

@@ -14,6 +14,9 @@ import {
   registerRouteLoaders,
   attachIntentPrefetch,
 } from "./lib/resourceHints";
+import { startHeapForensics } from "./lib/heapForensics";
+import { startFlagSync } from "./lib/featureFlags";
+import { trackOfflineGap } from "./lib/telemetry";
 import App from "./App";
 import "./App.css";
 import "./styles/theme.css";
@@ -69,6 +72,12 @@ registerRouteLoaders({
   "/kiosk": loadKiosk,
 });
 attachIntentPrefetch();
+
+// Field diagnostics: kill-switch propagation (#797), offline-gap accounting
+// for RUM (#796) and low-overhead heap forensics (#793).
+startFlagSync();
+trackOfflineGap();
+startHeapForensics();
 
 function render() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

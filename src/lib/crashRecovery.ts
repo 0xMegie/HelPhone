@@ -8,6 +8,8 @@
  * DB: helphone_crash_recovery / drafts store / key: emergency_draft
  */
 
+import { currentFlagVersion, evaluateKillSwitch, compareFlagVersions } from './featureFlags'
+
 export const DB_NAME = 'helphone_crash_recovery'
 export const STORE_NAME = 'drafts'
 export const DRAFT_KEY = 'emergency_draft'
@@ -23,11 +25,31 @@ export interface HelpDraft {
   searchQuery: string
   // Optional extra fields (profile, map state, etc.)
   extra?: Record<string, unknown>
+  /** Kill-switch snapshot version the draft was composed under (#797). */
+  flagVersion?: string
   createdAt: number
   updatedAt: number
 }
 
 export type GetDraftFn = () => Omit<HelpDraft, 'createdAt' | 'updatedAt'> | null | undefined
+
+export type ReplayVerdict =
+  | { allowed: true }
+  | { allowed: false; reason: 'blocked_by_kill_switch'; killSwitch: string; draftVersion: string; currentVersion: string }
+
+/**
+ * Stale-flag replay guard (#797). A draft composed under an older flag
+ * version is only resubmitted if the entrypoint it targets is still enabled
+ * now; otherwise the caller surfaces "blocked by kill-switch" instead of
+ * silently resubmitting to a killed path. The draft itself is kept.
+ */
+export function checkReplay(draft: HelpDraft, killSwitch = 'soroban.submit'): ReplayVerdict {
+  const draftVersion = draft.flagVersion ?? '0'
+  const currentVersion = currentFlagVersion()
+  if (compareFlagVersions(draftVersion, currentVersion) >= 0) return { allowed: true }
+  if (evaluateKillSwitch(killSwitch).enabled) return { allowed: true }
+  return { allowed: false, reason: 'blocked_by_kill_switch', killSwitch, draftVersion, currentVersion }
+}
 
 function isIndexedDBAvailable(): boolean {
   try {
@@ -102,6 +124,7 @@ export async function saveDraft(partial: Omit<HelpDraft, 'createdAt' | 'updatedA
     location: partial.location ?? null,
     searchQuery: partial.searchQuery ?? '',
     extra: partial.extra,
+    flagVersion: partial.flagVersion ?? currentFlagVersion(),
     createdAt,
     updatedAt: now,
   }

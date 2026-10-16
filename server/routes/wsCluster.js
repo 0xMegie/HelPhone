@@ -1,5 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
-import { subscribeContractEvents } from "../lib/redisPubSub.js";
+import { subscribeContractEvents, subscribeFlagSnapshots } from "../lib/redisPubSub.js";
 
 const EVENT_TOPICS = new Set(["RqCreated", "RqAcptd", "LocUpd", "Arrived", "Resolved", "Cancelled"]);
 const MAX_BUFFERED_BYTES = 1024 * 1024;
@@ -63,6 +63,16 @@ export function attachWebSocketRelay(server, { heartbeatMs = 30_000 } = {}) {
     }
   });
 
+  // Kill-switch push (#797): every connected client gets flag deltas,
+  // regardless of topic subscription. Slow clients are skipped, not closed —
+  // they still converge via the poll fallback.
+  const unsubscribeFlags = subscribeFlagSnapshots((snapshot) => {
+    const message = JSON.stringify({ type: "flags.patch", snapshot });
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && client.bufferedAmount <= MAX_BUFFERED_BYTES) client.send(message);
+    }
+  });
+
   const heartbeat = setInterval(() => {
     for (const client of wss.clients) {
       if (client.isAlive === false) {
@@ -80,6 +90,7 @@ export function attachWebSocketRelay(server, { heartbeatMs = 30_000 } = {}) {
     close: async () => {
       clearInterval(heartbeat);
       unsubscribe();
+      unsubscribeFlags();
       for (const client of wss.clients) client.close(1001, "Server shutting down");
       await new Promise((resolve) => wss.close(resolve));
     },

@@ -5,6 +5,7 @@
  * and stores them in PostgreSQL for fast querying.
  */
 import * as StellarSdk from '@stellar/stellar-sdk';
+import { observeLink } from '../middleware/metrics.js';
 
 export interface IndexerConfig {
   rpcUrl: string;
@@ -109,6 +110,16 @@ export async function getLastIndexedLedger(dbPool: any): Promise<number> {
 }
 
 /**
+ * Indexer lag (#795): ledger close → event visible in history, in seconds.
+ * Budget is perf-budget.json `links.indexerLag.p95Seconds`; a breach fails the
+ * perf:budget verdict. Returns null when the RPC omits the close time.
+ */
+export function indexerLagSeconds(ledgerClosedAt: string | undefined, now = Date.now()): number | null {
+  const closed = ledgerClosedAt ? Date.parse(ledgerClosedAt) : NaN;
+  return Number.isFinite(closed) ? Math.max(0, (now - closed) / 1000) : null;
+}
+
+/**
  * Update the indexer cursor to the latest processed ledger.
  */
 export async function updateCursor(
@@ -152,8 +163,11 @@ export async function startIndexer(config: IndexerConfig): Promise<void> {
           await storeEvent(dbPool, indexedEvent);
         }
 
-        const lastEventLedger = events[events.length - 1].ledgerSequence;
+        const lastEvent = events[events.length - 1];
+        const lastEventLedger = lastEvent.ledgerSequence;
         await updateCursor(dbPool, lastEventLedger);
+        const lag = indexerLagSeconds((lastEvent as { ledgerClosedAt?: string }).ledgerClosedAt);
+        if (lag !== null) observeLink('indexer.lag', lag);
         console.log(`[Indexer] Cursor updated to ledger ${lastEventLedger}`);
       }
     } catch (error) {

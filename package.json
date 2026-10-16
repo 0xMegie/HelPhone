@@ -15,6 +15,8 @@
     "build": "vite build",
     "prebuild": "npm run zk:shard",
     "preview": "vite preview",
+    "perf:budget": "node scripts/perf-budget.mjs",
+    "perf:budget:client": "playwright test --project=field-moto-g4 --grep @perf",
     "test": "vitest run",
     "benchmark:routing": "vitest run test/routing-benchmark-spike.test.js --reporter=verbose",
     "test:http2-manifest": "vitest run test/http2-manifest.test.js",
