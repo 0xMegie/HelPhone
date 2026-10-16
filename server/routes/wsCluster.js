@@ -32,6 +32,19 @@ export function attachWebSocketRelay(server, { heartbeatMs = 30_000 } = {}) {
     client.on("message", (raw) => {
       try {
         const message = JSON.parse(raw.toString());
+        if (message?.type === "peer-relay" && message.peerInstance && message.envelope) {
+          // Route peer-instance envelope across connected tenants
+          let relayed = 0;
+          for (const target of wss.clients) {
+            if (target !== client && target.readyState === WebSocket.OPEN && target.subscription?.tenantId === message.peerInstance) {
+              target.send(JSON.stringify({ type: "peer-relay", fromInstance: tenantId, envelope: message.envelope }));
+              relayed++;
+            }
+          }
+          client.send(JSON.stringify({ type: "peer-relay-ack", messageId: message.envelope?.nonce, relayedCount: relayed }));
+          return;
+        }
+
         if (message?.type !== "subscribe" || !Array.isArray(message.topics) || message.topics.length > EVENT_TOPICS.size) {
           client.close(1008, "Invalid subscription");
           return;

@@ -6,7 +6,9 @@
  */
 
 /** Parsed event types from the HelPhone contract */
-export type EventType = 'created' | 'accepted' | 'arrived' | 'resolved' | 'unknown';
+export type EventType = 'created' | 'accepted' | 'arrived' | 'resolved' | 'unknown' | 'federated_dispatch' | 'federated_ack';
+
+export type CustodyMarker = 'local_verified' | 'peer_asserted' | 'relayed';
 
 /** Structured event record after parsing */
 export interface ParsedEvent {
@@ -17,6 +19,11 @@ export interface ParsedEvent {
   timestamp?: number;
   latitude?: number;
   longitude?: number;
+  originInstance?: string;
+  custodyMarker?: CustodyMarker;
+  federationEnvelopeId?: string;
+  federationVerified?: boolean;
+  federationError?: string;
   raw: {
     topics: string[];
     data: any;
@@ -79,3 +86,43 @@ export function parseEvents(
 ): ParsedEvent[] {
   return events.map(e => parseEvent(e.topics, e.data));
 }
+
+/**
+ * Ingest foreign-origin event with explicit custody markers.
+ */
+export function parseFederatedEvent(
+  envelope: {
+    envelopeId: string;
+    senderInstance: string;
+    recipientInstance: string;
+    payloadType: string;
+    payload: any;
+    timestamp: number;
+  },
+  verificationResult: { verified: boolean; error?: string }
+): ParsedEvent {
+  const isDispatch = envelope.payloadType === 'dispatch';
+  const isAck = envelope.payloadType === 'ack';
+  const eventType: EventType = isDispatch
+    ? 'federated_dispatch'
+    : isAck
+    ? 'federated_ack'
+    : 'unknown';
+
+  return {
+    eventType,
+    requestId: envelope.payload?.requestId || envelope.payload?.incidentId || envelope.payload?.id,
+    responderAddress: envelope.payload?.responder || envelope.payload?.responderAddress,
+    timestamp: envelope.timestamp,
+    originInstance: envelope.senderInstance,
+    custodyMarker: 'peer_asserted',
+    federationEnvelopeId: envelope.envelopeId,
+    federationVerified: verificationResult.verified,
+    federationError: verificationResult.error,
+    raw: {
+      topics: [eventType, envelope.senderInstance, envelope.recipientInstance],
+      data: envelope.payload,
+    },
+  };
+}
+
