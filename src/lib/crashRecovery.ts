@@ -9,6 +9,7 @@
  */
 
 import { currentTraceIds } from './telemetry'
+
 export const DB_NAME = 'helphone_crash_recovery'
 export const STORE_NAME = 'drafts'
 export const DRAFT_KEY = 'emergency_draft'
