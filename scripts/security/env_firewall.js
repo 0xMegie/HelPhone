@@ -36,6 +36,28 @@ const SECRET_VALUE_PATTERNS = [
   { name: "generic-api-token", re: /\b(sk-live|ghp_|gho_|xox[bpas]-)[A-Za-z0-9_-]{10,}/g },
 ];
 
+// #792 — request PII (not secrets). Used by `--scan` on logs, trace exports
+// and contract-state snapshots; not applied to the JS bundle, where source
+// coordinates/phone formats would false-positive.
+export const PII_PATTERNS = [
+  { name: "e164-phone", re: /\+[1-9]\d{7,14}\b/g },
+  { name: "email", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
+  // Coordinate pairs finer than geohash-7 (>= 4 decimals).
+  { name: "precise-coordinate", re: /"(lat|lng|lon|latitude|longitude)"\s*:\s*"?-?\d{1,3}\.\d{4,}/gi },
+  { name: "free-text-note", re: /"(notes?|memo|description)"\s*:\s*"(?!\[redacted)[^"]{1,}"/gi },
+  { name: "raw-query-pii", re: /[?&](phone|contact|name|lat|lng)=(?!hmac%3A|hmac:)[^&\s"]+/gi },
+];
+
+export function scanForPII(text) {
+  const findings = [];
+  for (const { name, re } of PII_PATTERNS) {
+    re.lastIndex = 0;
+    const hits = text.match(re);
+    if (hits) findings.push({ kind: `pii:${name}`, count: hits.length });
+  }
+  return findings;
+}
+
 // Snapshot before the Proxy below hides sensitive keys (spreads/reads
 // through process.env afterwards would no longer see them).
 const RAW_ENV = { ...process.env };
@@ -185,6 +207,17 @@ if (argv[0] === "--audit") {
   for (const f of findings) console.error(`LEAK ${f.kind} in ${f.file}`);
   if (findings.length > 0) process.exit(1);
   console.log("env-firewall: bundle audit OK");
+} else if (argv[0] === "--scan") {
+  // node scripts/security/env_firewall.js --scan raw.log [more files...]
+  let total = 0;
+  for (const file of argv.slice(1)) {
+    for (const f of scanForPII(fs.readFileSync(file, "utf8"))) {
+      total += f.count;
+      console.error(`PII ${f.kind} x${f.count} in ${file}`);
+    }
+  }
+  if (total > 0) process.exit(1);
+  console.log("env-firewall: PII scan OK");
 } else if (argv[0] === "--exec") {
   // Spawn the child with the firewall preloaded (NODE_OPTIONS --import)
   // so env reads + network are guarded inside the child too. Secrets stay
