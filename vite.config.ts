@@ -50,6 +50,10 @@ export default defineConfig(({ mode }) => ({
         theme_color: "#234B4E",
         background_color: "#ECE0CC",
         display: "standalone",
+        // Broad scope intentionally kept for the main PWA install.
+        // The kiosk PWA is a separate install from /kiosk?shelter=… with its
+        // own start_url, scope "/kiosk", and display "standalone" enforced by
+        // the device MDM / Guided Access / Lock Task profile — see field guide.
         start_url: "/",
         scope: "/",
         icons: [
