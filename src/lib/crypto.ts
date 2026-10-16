@@ -964,3 +964,245 @@ export async function buildResponderKeyRecords(
 export function estimateEnvelopeBytes(envelope: EncryptedEnvelope): number {
   return new TextEncoder().encode(JSON.stringify(envelope)).length
 }
+
+// ── Federation Protocol (ISP-144) ──────────────────────────────────────────
+
+export interface TrustBundle {
+  instanceId: string
+  domain: string
+  aegisVaultRoot: string
+  rotationCounter: number
+  expertRegistryHash: string
+  revokedIdentities: string[]
+  issuedAt: number
+  expiresAt: number
+  signature: string
+  signingPublicKey: string
+}
+
+export interface FederatedEnvelope<T = unknown> {
+  version: '1.0'
+  envelopeId: string
+  senderInstance: string
+  recipientInstance: string
+  nonce: string
+  timestamp: number
+  trustBundleRef: {
+    instanceId: string
+    rotationCounter: number
+  }
+  payloadType: 'dispatch' | 'ack' | 'status_update' | 'crdt_delta' | 'settlement_iou'
+  payload: T
+  idempotencyKey: string
+  signature: string
+  senderPublicKey: string
+}
+
+export function canonicalJson(obj: unknown): string {
+  if (obj === null || typeof obj !== 'object') {
+    return JSON.stringify(obj)
+  }
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(canonicalJson).join(',') + ']'
+  }
+  const keys = Object.keys(obj as Record<string, unknown>).sort()
+  const entries = keys.map(
+    (k) => JSON.stringify(k) + ':' + canonicalJson((obj as Record<string, unknown>)[k])
+  )
+  return '{' + entries.join(',') + '}'
+}
+
+export async function createTrustBundle(params: {
+  instanceId: string
+  domain: string
+  aegisVaultRoot: string
+  rotationCounter: number
+  expertRegistryHash: string
+  revokedIdentities?: string[]
+  secretKey: string
+  publicKey: string
+  ttlMs?: number
+}): Promise<TrustBundle> {
+  const now = Date.now()
+  const ttl = params.ttlMs ?? 3600_000 // 1 hour default
+  const revoked = params.revokedIdentities ?? []
+
+  const bundleData = {
+    instanceId: params.instanceId,
+    domain: params.domain,
+    aegisVaultRoot: params.aegisVaultRoot,
+    rotationCounter: params.rotationCounter,
+    expertRegistryHash: params.expertRegistryHash,
+    revokedIdentities: [...revoked].sort(),
+    issuedAt: now,
+    expiresAt: now + ttl,
+  }
+
+  const message = canonicalJson(bundleData)
+  const signature = signEd25519Message(message, params.secretKey)
+
+  return {
+    ...bundleData,
+    signature,
+    signingPublicKey: params.publicKey,
+  }
+}
+
+export function verifyTrustBundle(
+  bundle: TrustBundle,
+  expectedPublicKey?: string,
+  now = Date.now(),
+  gracePeriodMs = 300_000
+): { valid: boolean; stale: boolean; expired: boolean; error?: string } {
+  if (!bundle || typeof bundle !== 'object') {
+    return { valid: false, stale: false, expired: true, error: 'Malformed trust bundle' }
+  }
+
+  if (expectedPublicKey && bundle.signingPublicKey !== expectedPublicKey) {
+    return { valid: false, stale: false, expired: false, error: 'Signer key does not match expected peer key' }
+  }
+
+  const bundleData = {
+    instanceId: bundle.instanceId,
+    domain: bundle.domain,
+    aegisVaultRoot: bundle.aegisVaultRoot,
+    rotationCounter: bundle.rotationCounter,
+    expertRegistryHash: bundle.expertRegistryHash,
+    revokedIdentities: [...(bundle.revokedIdentities || [])].sort(),
+    issuedAt: bundle.issuedAt,
+    expiresAt: bundle.expiresAt,
+  }
+
+  const message = canonicalJson(bundleData)
+  const isSigValid = verifyEd25519Signature(message, bundle.signature, bundle.signingPublicKey)
+  if (!isSigValid) {
+    return { valid: false, stale: false, expired: false, error: 'Invalid trust bundle signature' }
+  }
+
+  const isExpiredBeyondGrace = now > bundle.expiresAt + gracePeriodMs
+  const isStale = now > bundle.expiresAt
+
+  if (isExpiredBeyondGrace) {
+    return { valid: false, stale: true, expired: true, error: 'Trust bundle has expired beyond grace period' }
+  }
+
+  return {
+    valid: true,
+    stale: isStale,
+    expired: false,
+    error: isStale ? 'Trust bundle is stale (verify-but-flag)' : undefined,
+  }
+}
+
+export function isIdentityRevoked(identity: string, bundle: TrustBundle): boolean {
+  if (!bundle || !Array.isArray(bundle.revokedIdentities)) return false
+  return bundle.revokedIdentities.includes(identity)
+}
+
+export async function signFederatedEnvelope<T>(params: {
+  senderInstance: string
+  recipientInstance: string
+  payloadType: FederatedEnvelope['payloadType']
+  payload: T
+  trustBundleRef: { instanceId: string; rotationCounter: number }
+  secretKey: string
+  publicKey: string
+  nonce?: string
+  idempotencyKey?: string
+  timestamp?: number
+}): Promise<FederatedEnvelope<T>> {
+  const nonce = params.nonce || crypto.randomBytes(16).toString('hex')
+  const idempotencyKey = params.idempotencyKey || `${params.senderInstance}:${nonce}`
+  const timestamp = params.timestamp || Date.now()
+  const envelopeId = `${params.senderInstance}:${timestamp}:${nonce.slice(0, 8)}`
+
+  const envelopeData = {
+    version: '1.0' as const,
+    envelopeId,
+    senderInstance: params.senderInstance,
+    recipientInstance: params.recipientInstance,
+    nonce,
+    timestamp,
+    trustBundleRef: params.trustBundleRef,
+    payloadType: params.payloadType,
+    payload: params.payload,
+    idempotencyKey,
+  }
+
+  const message = canonicalJson(envelopeData)
+  const signature = signEd25519Message(message, params.secretKey)
+
+  return {
+    ...envelopeData,
+    signature,
+    senderPublicKey: params.publicKey,
+  }
+}
+
+export function verifyFederatedEnvelope<T>(
+  envelope: FederatedEnvelope<T>,
+  trustBundle: TrustBundle,
+  options: { maxAgeMs?: number; now?: number } = {}
+): { verified: boolean; error?: string; staleBundle?: boolean } {
+  if (!envelope || envelope.version !== '1.0') {
+    return { verified: false, error: 'Unsupported or missing envelope version' }
+  }
+
+  if (envelope.senderInstance !== trustBundle.instanceId) {
+    return {
+      verified: false,
+      error: `Sender instance mismatch: envelope=${envelope.senderInstance}, bundle=${trustBundle.instanceId}`,
+    }
+  }
+
+  if (envelope.senderPublicKey !== trustBundle.signingPublicKey) {
+    return { verified: false, error: 'Envelope key does not match trust bundle signing key' }
+  }
+
+  const bundleCheck = verifyTrustBundle(trustBundle, envelope.senderPublicKey, options.now)
+  if (!bundleCheck.valid) {
+    return { verified: false, error: `Trust bundle verification failed: ${bundleCheck.error}` }
+  }
+
+  if (envelope.trustBundleRef.rotationCounter < trustBundle.rotationCounter) {
+    return {
+      verified: false,
+      error: `Envelope references superseded trust root counter ${envelope.trustBundleRef.rotationCounter} < ${trustBundle.rotationCounter}`,
+    }
+  }
+
+  const now = options.now ?? Date.now()
+  const maxAge = options.maxAgeMs ?? 300_000 // 5 minutes replay window
+  if (Math.abs(now - envelope.timestamp) > maxAge) {
+    return { verified: false, error: `Envelope timestamp outside replay window (${Math.round((now - envelope.timestamp) / 1000)}s drift)` }
+  }
+
+  const envelopeData = {
+    version: envelope.version,
+    envelopeId: envelope.envelopeId,
+    senderInstance: envelope.senderInstance,
+    recipientInstance: envelope.recipientInstance,
+    nonce: envelope.nonce,
+    timestamp: envelope.timestamp,
+    trustBundleRef: envelope.trustBundleRef,
+    payloadType: envelope.payloadType,
+    payload: envelope.payload,
+    idempotencyKey: envelope.idempotencyKey,
+  }
+
+  const message = canonicalJson(envelopeData)
+  const isSigValid = verifyEd25519Signature(message, envelope.signature, envelope.senderPublicKey)
+  if (!isSigValid) {
+    return { verified: false, error: 'Envelope signature verification failed (tampered payload or invalid signature)' }
+  }
+
+  return {
+    verified: true,
+    staleBundle: bundleCheck.stale,
+  }
+}
+
+export function verifyForeignSignature(data: string, signatureHex: string, foreignPublicKey: string): boolean {
+  return verifyEd25519Signature(data, signatureHex, foreignPublicKey)
+}
+

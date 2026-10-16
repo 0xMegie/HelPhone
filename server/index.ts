@@ -22,6 +22,10 @@ import {
   optionsFromEnv as http2PushOptionsFromEnv,
 } from './middleware/http2Push.js'
 import { createPasskeyAuthRouter } from './routes/passkey-auth.js'
+import { createFederationRouter } from './routes/federation.js'
+import { createDispatchRouters } from './routes/dispatch.js'
+import { syncRouter } from './routes/sync.js'
+import historyRouter from './routes/history.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -65,6 +69,12 @@ app.use(
 )
 if (process.env.NODE_ENV !== 'test') app.use(generalLimiter)
 app.use('/api/auth/passkey', createPasskeyAuthRouter())
+const dispatchRouters = createDispatchRouters()
+app.use('/api/dispatch', dispatchRouters.api)
+app.use('/metrics', dispatchRouters.metrics)
+app.use('/api/sync', syncRouter)
+app.use('/api/history', historyRouter)
+app.use('/api/federation', createFederationRouter())
 
 const stateExporter = new SorobanStateExporter()
 

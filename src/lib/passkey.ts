@@ -1,5 +1,8 @@
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
+import crypto from 'crypto'
 import type { PasskeyCredential, WebAuthnVerificationResult } from '../types/index.js'
+import { signEd25519Message, verifyEd25519Signature, isIdentityRevoked } from './crypto.ts'
+import type { TrustBundle } from './crypto.ts'
 
 type ServerResponse = { options: Record<string, unknown>; error?: string }
 
@@ -44,3 +47,116 @@ export class PasskeyManager {
 }
 
 export const passkeyManager = new PasskeyManager()
+
+// ── Cross-Domain Identity Bridging (ISP-144) ──────────────────────────────
+
+export interface ScopedCredentialPresentation {
+  credentialId: string
+  originInstance: string
+  targetDomain: string
+  presentationNonce: string
+  issuedAt: number
+  expiresAt: number
+  nullifierHash: string
+  attestationSignature: string
+  signingPublicKey: string
+}
+
+export function presentCrossDomainCredential(params: {
+  credentialId: string
+  originInstance: string
+  targetDomain: string
+  nullifier: string
+  secretKey: string
+  publicKey: string
+  ttlMs?: number
+}): ScopedCredentialPresentation {
+  const now = Date.now()
+  const ttl = params.ttlMs ?? 600_000 // 10 minutes
+  const nonce = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2)
+
+  // Domain-separated nullifier hash: prevents double-spending / Sybil linkage across domains
+  const nullifierHash = crypto
+    .createHash('sha256')
+    .update(`${params.nullifier}:${params.targetDomain}`)
+    .digest('hex')
+
+  const presentationData = {
+    credentialId: params.credentialId,
+    originInstance: params.originInstance,
+    targetDomain: params.targetDomain,
+    presentationNonce: nonce,
+    issuedAt: now,
+    expiresAt: now + ttl,
+    nullifierHash,
+  }
+
+  // Ed25519 or HMAC signature of canonical payload
+  const message = JSON.stringify(presentationData)
+  const attestationSignature = signEd25519Message(message, params.secretKey)
+
+  return {
+    ...presentationData,
+    attestationSignature,
+    signingPublicKey: params.publicKey,
+  }
+}
+
+export function verifyCrossDomainPresentation(
+  presentation: ScopedCredentialPresentation,
+  expectedTargetDomain: string,
+  peerTrustBundle: TrustBundle,
+  now = Date.now()
+): { verified: boolean; error?: string } {
+  if (!presentation || typeof presentation !== 'object') {
+    return { verified: false, error: 'Malformed presentation' }
+  }
+
+  if (presentation.targetDomain !== expectedTargetDomain) {
+    return {
+      verified: false,
+      error: `Domain mismatch: presentation is scoped for ${presentation.targetDomain}, expected ${expectedTargetDomain}`,
+    }
+  }
+
+  if (presentation.originInstance !== peerTrustBundle.instanceId) {
+    return {
+      verified: false,
+      error: `Origin instance mismatch: presentation=${presentation.originInstance}, bundle=${peerTrustBundle.instanceId}`,
+    }
+  }
+
+  if (now > presentation.expiresAt) {
+    return { verified: false, error: 'Cross-domain credential presentation has expired' }
+  }
+
+  // Check revocation in peer trust bundle
+  if (isIdentityRevoked(presentation.credentialId, peerTrustBundle) ||
+      isIdentityRevoked(presentation.nullifierHash, peerTrustBundle)) {
+    return { verified: false, error: 'Identity has been revoked by peer instance' }
+  }
+
+  const presentationData = {
+    credentialId: presentation.credentialId,
+    originInstance: presentation.originInstance,
+    targetDomain: presentation.targetDomain,
+    presentationNonce: presentation.presentationNonce,
+    issuedAt: presentation.issuedAt,
+    expiresAt: presentation.expiresAt,
+    nullifierHash: presentation.nullifierHash,
+  }
+
+  const message = JSON.stringify(presentationData)
+  const isSigValid = verifyEd25519Signature(
+    message,
+    presentation.attestationSignature,
+    presentation.signingPublicKey
+  )
+
+  if (!isSigValid) {
+    return { verified: false, error: 'Invalid attestation signature on presentation' }
+  }
+
+  return { verified: true }
+}
+

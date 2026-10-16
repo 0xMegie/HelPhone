@@ -25,6 +25,10 @@ import {
 import { startMaintenanceScheduler } from "./db/maintenance.js";
 import { getMaintenanceConfig } from "./env.js";
 import { createPasskeyAuthRouter } from "./routes/passkey-auth.js";
+import { createFederationRouter } from "./routes/federation.js";
+import { createDispatchRouters } from "./routes/dispatch.js";
+import { syncRouter } from "./routes/sync.js";
+import historyRouter from "./routes/history.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -174,6 +178,12 @@ if (process.env.NODE_ENV !== "test") {
   app.use(rateLimiter);
 }
 app.use("/api/auth/passkey", createPasskeyAuthRouter());
+const dispatchRouters = createDispatchRouters();
+app.use("/api/dispatch", dispatchRouters.api);
+app.use("/metrics", dispatchRouters.metrics);
+app.use("/api/sync", syncRouter);
+app.use("/api/history", historyRouter);
+app.use("/api/federation", createFederationRouter());
 
 // ── Contract event bridge ────────────────────────────────────────
 // Issue #177: the frontend used to poll the contract directly on a timer

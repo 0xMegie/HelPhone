@@ -1,32 +1,44 @@
 /**
  * History Routes
  *
- * REST API endpoints for querying indexed event history.
+ * REST API endpoints for querying indexed event history and merged
+ * cross-border timelines across federated deployments (ISP-144).
  */
 import { Router, Request, Response } from 'express';
+import type { ParsedEvent, CustodyMarker } from '../indexer/parser.js';
 
 const router = Router();
+
+// In-memory event store fallback / cache for fast access and federated testing
+const eventHistoryStore: ParsedEvent[] = [];
+
+export function recordHistoryEvent(event: ParsedEvent): void {
+  eventHistoryStore.push(event);
+  if (eventHistoryStore.length > 5000) {
+    eventHistoryStore.shift();
+  }
+}
+
+export function getHistoryEvents(): ParsedEvent[] {
+  return [...eventHistoryStore];
+}
+
+export function clearHistoryEvents(): void {
+  eventHistoryStore.length = 0;
+}
 
 /**
  * GET /api/history/events
  *
- * Query events with pagination and filtering.
- *
- * Query params:
- *   - type: Filter by event type (created, accepted, arrived, resolved)
- *   - contract: Filter by contract ID
- *   - from_ledger: Minimum ledger sequence
- *   - to_ledger: Maximum ledger sequence
- *   - page: Page number (default 0)
- *   - limit: Items per page (default 50, max 100)
+ * Query events with pagination, origin filtering, and custody demarcation.
  */
 router.get('/events', async (req: Request, res: Response) => {
   try {
     const {
       type,
-      contract,
-      from_ledger,
-      to_ledger,
+      origin_instance,
+      custody_marker,
+      include_foreign = 'true',
       page = '0',
       limit = '50',
     } = req.query;
@@ -35,51 +47,37 @@ router.get('/events', async (req: Request, res: Response) => {
     const limitNum = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 50));
     const offset = pageNum * limitNum;
 
-    // Build query dynamically
-    const conditions: string[] = [];
-    const params: any[] = [];
-    let paramIdx = 1;
+    let filtered = [...eventHistoryStore];
+
+    if (include_foreign === 'false') {
+      filtered = filtered.filter(
+        (e) => !e.custodyMarker || e.custodyMarker === 'local_verified'
+      );
+    }
 
     if (type) {
-      conditions.push(`event_type = $${paramIdx++}`);
-      params.push(type);
-    }
-    if (contract) {
-      conditions.push(`contract_id = $${paramIdx++}`);
-      params.push(contract);
-    }
-    if (from_ledger) {
-      conditions.push(`ledger_seq >= $${paramIdx++}`);
-      params.push(parseInt(from_ledger as string, 10));
-    }
-    if (to_ledger) {
-      conditions.push(`ledger_seq <= $${paramIdx++}`);
-      params.push(parseInt(to_ledger as string, 10));
+      filtered = filtered.filter((e) => e.eventType === type);
     }
 
-    const whereClause = conditions.length > 0
-      ? `WHERE ${conditions.join(' AND ')}`
-      : '';
+    if (origin_instance) {
+      filtered = filtered.filter((e) => e.originInstance === origin_instance);
+    }
 
-    // TODO: Use actual database pool from app context
-    // const dbPool = req.app.get('dbPool');
-    // const countResult = await dbPool.query(
-    //   `SELECT COUNT(*) FROM event_index ${whereClause}`,
-    //   params
-    // );
-    // const dataResult = await dbPool.query(
-    //   `SELECT * FROM event_index ${whereClause} ORDER BY ledger_seq DESC, event_index ASC LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-    //   [...params, limitNum, offset]
-    // );
+    if (custody_marker) {
+      filtered = filtered.filter((e) => e.custodyMarker === custody_marker);
+    }
 
-    // Placeholder response
+    filtered.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    const paged = filtered.slice(offset, offset + limitNum);
+
     res.json({
-      events: [],
+      events: paged,
       pagination: {
         page: pageNum,
         limit: limitNum,
-        total: 0,
-        hasMore: false,
+        total: filtered.length,
+        hasMore: offset + limitNum < filtered.length,
       },
     });
   } catch (error) {
@@ -91,21 +89,17 @@ router.get('/events', async (req: Request, res: Response) => {
 /**
  * GET /api/history/events/:requestId
  *
- * Get all events for a specific emergency request.
+ * Get all events for a specific emergency request across local and peer sources.
  */
 router.get('/events/:requestId', async (req: Request, res: Response) => {
   try {
     const { requestId } = req.params;
-
-    // TODO: Query events filtered by requestId in topics
-    // const result = await dbPool.query(
-    //   `SELECT * FROM event_index WHERE topics @> $1 ORDER BY ledger_seq ASC`,
-    //   [JSON.stringify([requestId])]
-    // );
+    const events = eventHistoryStore.filter((e) => e.requestId === requestId);
+    events.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
     res.json({
       requestId,
-      events: [],
+      events,
     });
   } catch (error) {
     console.error('[History] Error querying request events:', error);
@@ -114,25 +108,76 @@ router.get('/events/:requestId', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/history/timeline/:requestId
+ *
+ * Merged cross-border timeline with explicit provenance demarcation.
+ * Flagged for tamper evidence and peer custody tracking.
+ */
+router.get('/timeline/:requestId', async (req: Request, res: Response) => {
+  try {
+    const { requestId } = req.params;
+    const events = eventHistoryStore.filter((e) => e.requestId === requestId);
+    events.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+    const timeline = events.map((ev) => {
+      const isPeer = ev.custodyMarker === 'peer_asserted';
+      const hasTamper = ev.federationVerified === false;
+      return {
+        timestamp: ev.timestamp,
+        eventType: ev.eventType,
+        actor: ev.responderAddress || ev.callerAddress,
+        originInstance: ev.originInstance || 'local',
+        custodyMarker: ev.custodyMarker || 'local_verified',
+        provenanceLabel: isPeer
+          ? `Asserted by peer instance (${ev.originInstance})`
+          : 'Verified by local DAO',
+        tamperDetected: hasTamper,
+        verificationError: ev.federationError,
+        details: ev.raw?.data || {},
+      };
+    });
+
+    res.json({
+      requestId,
+      totalEvents: timeline.length,
+      hasTamperAlert: timeline.some((t) => t.tamperDetected),
+      timeline,
+    });
+  } catch (error) {
+    console.error('[History] Error building timeline:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * GET /api/history/stats
  *
- * Get aggregate statistics about indexed events.
+ * Get aggregate statistics about indexed events including federation breakdown.
  */
 router.get('/stats', async (req: Request, res: Response) => {
   try {
-    // TODO: Aggregate query
-    // const result = await dbPool.query(`
-    //   SELECT
-    //     event_type,
-    //     COUNT(*) as count,
-    //     MAX(ledger_seq) as latest_ledger
-    //   FROM event_index
-    //   GROUP BY event_type
-    // `);
+    const byType: Record<string, number> = {};
+    const byCustody: Record<string, number> = {
+      local_verified: 0,
+      peer_asserted: 0,
+      relayed: 0,
+    };
+    let tamperedCount = 0;
+
+    for (const ev of eventHistoryStore) {
+      byType[ev.eventType] = (byType[ev.eventType] || 0) + 1;
+      const marker = ev.custodyMarker || 'local_verified';
+      byCustody[marker] = (byCustody[marker] || 0) + 1;
+      if (ev.federationVerified === false) {
+        tamperedCount++;
+      }
+    }
 
     res.json({
-      totalEvents: 0,
-      byType: {},
+      totalEvents: eventHistoryStore.length,
+      byType,
+      byCustody,
+      tamperedCount,
       latestLedger: 0,
     });
   } catch (error) {
