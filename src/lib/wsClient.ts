@@ -1,5 +1,8 @@
 export type ConnectionState = 'CONNECTING' | 'OPEN' | 'RECONNECTING' | 'FAILED';
 
+/** Origin tag injected into kiosk-sourced intent messages. */
+export const KIOSK_ORIGIN_TAG = 'KIOSK-UNVERIFIED' as const;
+
 export interface WsClientOptions {
   url: string;
   maxRetries?: number;
@@ -101,6 +104,15 @@ export class WsClient {
     if (this.ws && this.state === 'OPEN') {
       this.ws.send(typeof data === 'string' ? data : JSON.stringify(data));
     }
+  }
+
+  /**
+   * Send a message tagged as kiosk-origin. The server / ResponderTracker
+   * must treat these as UNVERIFIED and route them to the triage queue rather
+   * than auto-dispatching.
+   */
+  sendKiosk(data: Record<string, unknown>): void {
+    this.send({ ...data, origin: KIOSK_ORIGIN_TAG });
   }
 
   close(): void {

@@ -692,3 +692,30 @@ export type {
   WorkerSandboxViolation,
   WorkerSchemas,
 } from '../lib/workerSandbox'
+
+// --- Routing & Graph Data Structures (offline routing) ---
+export interface RouteResult {
+  /** Distance in kilometres. */
+  distanceKm: number
+  /** Ordered list of node indices forming the path from source to destination. */
+  path: number[]
+}
+
+export interface SpatialGraph {
+  /** Total node count in the graph. */
+  nodeCount: number
+  /** Adjacency list: edgeOffsets[n] → index in edgeDests/edgeWeights for node n. */
+  edgeOffsets: Uint32Array
+  /** Edge destination nodes (one per edge). */
+  edgeDests: Uint32Array
+  /** Edge weights in metres (one per edge). */
+  edgeWeights: Float32Array
+}
+
+export interface RoadNetworkDocument {
+  version: number
+  nodeCount: number
+  edgeCount: number
+  /** Compressed adjacency list + weights as typed arrays. */
+  graph: SpatialGraph
+}

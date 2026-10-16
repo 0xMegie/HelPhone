@@ -24,9 +24,11 @@ import "./styles/theme.css";
 const loadHelp = () => import("./pages/Help");
 const loadRanking = () => import("./pages/Ranking");
 const loadAdmin = () => import("./pages/Admin");
+const loadKiosk = () => import("./pages/Kiosk");
 const Help = lazy(loadHelp);
 const Ranking = lazy(loadRanking);
 const Admin = lazy(loadAdmin);
+const Kiosk = lazy(loadKiosk);
 // #608 spike: WebGPU spatial-clustering prototype + benchmark harness (ADR-008).
 const ClusterLab = lazy(() => import("./components/WebGPUMap"));
 // Binary telemetry protocol spike: decode/GC benchmark harness (ADR-014).
@@ -64,6 +66,7 @@ registerRouteLoaders({
   "/help": loadHelp,
   "/ranking": loadRanking,
   "/admin": loadAdmin,
+  "/kiosk": loadKiosk,
 });
 attachIntentPrefetch();
 
@@ -86,6 +89,7 @@ function render() {
                 <Route path="/help" element={<Help />} />
                 <Route path="/ranking" element={<Ranking />} />
                 <Route path="/admin" element={<Admin />} />
+                <Route path="/kiosk" element={<Kiosk />} />
                 <Route path="/lab/cluster-bench" element={<ClusterLab />} />
                 <Route path="/lab/telemetry-bench" element={<TelemetryLab />} />
               </Routes>
