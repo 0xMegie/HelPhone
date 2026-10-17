@@ -3,6 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <!-- ISP-135/ISP-134: scope WebSerial + Web NFC to the app origin only so
+         the installed PWA cannot be abused as a general USB/NFC attack surface. -->
+    <meta
+      http-equiv="Permissions-Policy"
+      content="serial=(self), nfc=(self), camera=(), microphone=(), geolocation=(self)"
+    />
     <title>HelPhone</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

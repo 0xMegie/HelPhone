@@ -1,6 +1,17 @@
 import styles from "./Help.module.css";
 import { cx } from "../styles/cssModules";
 import { useState, useEffect, useRef, Fragment, useCallback } from "react";
+// ── Field ops (ISP-131 rugged/SOS, ISP-134 NFC staging, ISP-135 radio) ──
+import RadioSheet from "../components/field/RadioSheet";
+import StagingSheet from "../components/field/StagingSheet";
+import SosSheet from "../components/field/SosSheet";
+import { useRadioBridge } from "../hooks/useRadioBridge";
+import { useNfcCheckIn } from "../hooks/useNfcCheckIn";
+import { useHardwareSOS } from "../hooks/useHardwareSOS";
+import { useRuggedMode } from "../hooks/useRuggedMode";
+import { queueDepth, PRIO } from "../lib/field/offlineQueue";
+import { getTransport, transportBadge } from "../lib/field/transportEstimator";
+import { MSG } from "../lib/radio/protocol";
 import { Link } from "react-router-dom";
 import { StellarWalletsKit } from "@creit-tech/stellar-wallets-kit/sdk";
 import { KitEventType } from "@creit-tech/stellar-wallets-kit/types";
@@ -324,7 +335,7 @@ function txExplorerUrl(hash) {
   return `https://stellar.expert/explorer/testnet/tx/${hash}`;
 }
 
-function ExplorerLink({ label, hash }) {
+export function ExplorerLink({ label, hash }) {
   const url = txExplorerUrl(hash);
   if (!url) return null;
   return (
@@ -605,7 +616,7 @@ export const HELP_ONBOARDING_STEPS = [
   },
 ];
 
-function HelpOnboardingModal({ open, onClose, onConnectWallet }) {
+export function HelpOnboardingModal({ open, onClose, onConnectWallet }) {
   const [step, setStep] = useState(0);
   useEffect(() => {
     if (open) setStep(0);
@@ -1286,6 +1297,69 @@ export default function Help() {
   const [walletAddress, setWalletAddress] = useState("");
   const activeWalletAddress = walletAddress;
   const isWalletConnected = !!activeWalletAddress;
+
+  // ── Field ops state (ISP-131/134/135) ─────────────────────────────────────
+  const [showRadioSheet, setShowRadioSheet] = useState(false);
+  const [showStagingSheet, setShowStagingSheet] = useState(false);
+  const [showSosSheet, setShowSosSheet] = useState(false);
+  const [sosDispatchedAt, setSosDispatchedAt] = useState(null);
+  const [online, setOnline] = useState(() =>
+    typeof navigator === "undefined" ? true : navigator.onLine,
+  );
+  const rugged = useRuggedMode();
+  const radio = useRadioBridge();
+  const nfc = useNfcCheckIn({ responderId: activeWalletAddress || "anonymous" });
+
+  useEffect(() => {
+    const handleOnline = () => setOnline(true);
+    const handleOffline = () => setOnline(false);
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // Pocket-press gate: auto-dispatch only inside an active incident geofence;
+  // anywhere else the hardware key routes through the confirm sheet.
+  const canSosAutoDispatch = useCallback(() => {
+    if (!location || !Number.isFinite(location[0])) return false;
+    return openRequests.some(
+      (r) =>
+        r &&
+        Number.isFinite(r.lat) &&
+        Number.isFinite(r.lng) &&
+        distance(location, [r.lat, r.lng]) <= 0.5,
+    );
+  }, [location, openRequests]);
+
+  const handleSosCommit = useCallback(
+    ({ idempotencyKey }) => {
+      setMode("get");
+      setEmergencyType((prev) => prev || "fallen");
+      setSosDispatchedAt(Date.now());
+      radio.send(
+        {
+          type: "fallen",
+          severity: 3,
+          id: String(idempotencyKey || "").slice(-8),
+          ts: Date.now(),
+          lat: location?.[0],
+          lng: location?.[1],
+        },
+        { type: MSG.SOS, prio: PRIO.SOS },
+      );
+    },
+    [radio, location],
+  );
+
+  const sos = useHardwareSOS({
+    canAutoDispatch: canSosAutoDispatch,
+    onCommit: handleSosCommit,
+    onNeedsConfirm: () => setShowSosSheet(true),
+  });
+
   const styleSelectorRef = useRef(null);
   const profileRef = useRef(null);
   const sidebarRef = useRef(null);
@@ -2250,6 +2324,94 @@ export default function Help() {
                 {label}
               </button>
             ))}
+          </div>
+
+          {/* Field tools card — radio bridge, NFC staging, rugged mode (ISP-131/134/135) */}
+          <div className={styles["hp-fieldops-card"]} data-testid="field-ops-card">
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: "8px",
+                gap: "8px",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  letterSpacing: "0.8px",
+                  color: "rgba(242,236,220,0.55)",
+                }}
+              >
+                FIELD TOOLS
+              </span>
+              <span
+                className={styles["hp-fieldops-badge"]}
+                data-testid="field-transport-badge"
+                style={{
+                  color:
+                    radio.state.status === "linked"
+                      ? "#7DE2A8"
+                      : online
+                        ? "rgba(242,236,220,0.7)"
+                        : "#FFB3AA",
+                }}
+              >
+                {
+                  transportBadge(
+                    getTransport({
+                      online,
+                      radioLinked: radio.state.status === "linked",
+                    }),
+                  ).label
+                }
+              </span>
+            </div>
+            <div className={styles["hp-fieldops-row"]}>
+              <button
+                type="button"
+                className={styles["hp-fieldops-btn"]}
+                aria-label="Open radio bridge"
+                onClick={() => setShowRadioSheet(true)}
+              >
+                Radio
+              </button>
+              <button
+                type="button"
+                className={styles["hp-fieldops-btn"]}
+                aria-label="Open staging check-in"
+                onClick={() => setShowStagingSheet(true)}
+              >
+                Staging
+              </button>
+              <button
+                type="button"
+                className={styles["hp-fieldops-btn"]}
+                role="switch"
+                aria-checked={rugged.enabled}
+                aria-label="Rugged mode for glove use and sunlight"
+                data-testid="rugged-toggle"
+                onClick={rugged.toggle}
+              >
+                Rugged {rugged.enabled ? "ON" : "OFF"}
+              </button>
+            </div>
+            <div
+              style={{
+                marginTop: "8px",
+                fontSize: "10.5px",
+                color: "rgba(242,236,220,0.5)",
+              }}
+              data-testid="field-queue-depth"
+            >
+              Queue {queueDepth()}
+              {sosDispatchedAt
+                ? ` · SOS ${new Date(sosDispatchedAt).toLocaleTimeString()}`
+                : ""}
+              {sos.pttActive ? " · PTT live" : ""}
+            </div>
           </div>
 
           <div
@@ -4320,6 +4482,27 @@ export default function Help() {
           open={showOnboarding}
           onClose={() => setShowOnboarding(false)}
           onConnectWallet={() => promptWalletConnection()}
+        />
+
+        <RadioSheet
+          open={showRadioSheet}
+          onClose={() => setShowRadioSheet(false)}
+          bridge={radio}
+        />
+
+        <StagingSheet
+          open={showStagingSheet}
+          onClose={() => setShowStagingSheet(false)}
+          checkIn={nfc}
+        />
+
+        <SosSheet
+          open={showSosSheet}
+          onCancel={() => setShowSosSheet(false)}
+          onConfirm={() => {
+            setShowSosSheet(false);
+            sos.commit({ source: "sos-sheet", force: true });
+          }}
         />
 
         {!location && (
