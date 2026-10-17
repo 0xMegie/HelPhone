@@ -18,6 +18,8 @@
 // 3. --apply: write manifests, `npm install`, re-audit, then run the full
 //    regression suite (`--verify <cmd>`, repeatable; default `npm test`).
 //    Any failure restores package.json / server/package.json / lockfile.
+//    Packages in the `crypto-core` tier of crypto-pins.json (Barretenberg/Noir)
+//    are never applied: they are reported as needing manual review (#779).
 // 4. --open-pr: commit on a `security/cve-patch-*` branch, push and open a PR
 //    (via `gh`) listing every advisory, the version moves and verification.
 //
@@ -34,6 +36,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { holdCryptoCore, loadPolicy } from "./check-crypto-pins.js";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -492,13 +495,17 @@ async function main() {
   }
   advisories = advisories.filter((a) => severityRank(a.severity) >= severityRank(minSeverity));
 
-  const plan = await planPatches({
-    lock,
-    manifests,
-    advisories,
-    versionsOf: registryVersions(offline),
-    allowMajor: args.includes("--allow-major"),
-  });
+  // #779: crypto-core pins (crypto-pins.json) are never auto-applied.
+  const plan = holdCryptoCore(
+    await planPatches({
+      lock,
+      manifests,
+      advisories,
+      versionsOf: registryVersions(offline),
+      allowMajor: args.includes("--allow-major"),
+    }),
+    loadPolicy(),
+  );
   if (args.includes("--json")) console.log(JSON.stringify(plan, null, 2));
   else printPlan(plan);
 

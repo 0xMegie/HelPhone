@@ -77,6 +77,33 @@ Covers the typosquatting gate (#588) and the transitive vulnerability scanner (#
   4. Handle "Needs manual follow-up" items as separate PRs, for example a
      dependency upgrade that removes the vulnerable package.
 
+## Crypto-core pins (#779)
+
+- Policy: `crypto-pins.json` lists the Barretenberg/Noir packages
+  (`@aztec/bb.js`, `@noir-lang/*`) with their exact pinned version, tier,
+  rationale, ADR reference and last review date.
+- Gate: `npm run security:crypto-pins` (`scripts/check-crypto-pins.js`, also
+  a step of CI's `supply-chain` job and a `--verify` step of the CVE patch
+  bot) fails with a readable explanation when:
+  - a pinned package resolves to another version anywhere in
+    `package-lock.json`;
+  - the `@noir-lang` family resolves to mixed versions;
+  - a `barretenberg` crate in `Cargo.lock` (none today) differs from the
+    pinned `@aztec/bb.js`;
+  - a pin lacks a rationale or review date.
+- Stale pins: a pin not reviewed for more than `staleAfterDays` (180) is
+  reported as `STALE`; `--strict-stale` turns that into a failure.
+- Bot behaviour: packages in the `crypto-core` tier are never applied by
+  `scripts/auto-patch-cve.js`. They appear under "Needs manual follow-up"
+  and still count towards `--fail-on`.
+- ABI checklist for a deliberate crypto-core bump (one PR):
+  1. Bump `package.json`/`package-lock.json` and any coupled Cargo pin together.
+  2. Recompile the circuits and run the real prove/verify path, not a mock.
+  3. Update `version`, `rationale` and `reviewed` in `crypto-pins.json`.
+  4. Roll back by reverting that single PR; never revert only one lockfile.
+- Not covered here: unmocked prover smoke tests in CI, staged PWA rollout of
+  WASM changes, and typosquat-hold ordering for the bot.
+
 ## Maintainer key revocation & web of trust (#619)
 
 - Script: `scripts/security/verify_maintainer_keys.js`, configured by
