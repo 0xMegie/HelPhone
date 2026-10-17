@@ -8,6 +8,7 @@
 // Worker -> main:
 //   { type: 'stats', stats: { fps, frames, windowMs } }   once per second
 
+import { installWorkerHooks } from "./workerSupervision.js";
 import { drawOverlayFrame, FpsMeter } from "../lib/offscreenCanvas.ts";
 
 let canvas = null;
@@ -38,6 +39,8 @@ function applySize(next) {
   canvas.height = Math.round(size.height * size.dpr);
 }
 
+// Error/heartbeat parity for null-origin workers (#793).
+installWorkerHooks(self, "canvas-worker");
 self.onmessage = (event) => {
   const msg = event.data;
   switch (msg.type) {

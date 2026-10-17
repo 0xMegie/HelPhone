@@ -149,7 +149,7 @@ app.get("/metrics", (req, res) => {
   if (token && req.get("authorization") !== `Bearer ${token}`) {
     return res.status(401).end();
   }
-  res.type("text/plain; version=0.0.4; charset=utf-8").send(renderMetrics());
+  res.type("text/plain; version=0.0.4; charset=utf-8").send(renderMetrics() + renderTelemetryMetrics());
 });
 app.post("/api/telemetry/errors", (req, res) => telemetryErrorHandler(req, res));
 app.get("/api/time", clockSyncHandler);
@@ -543,7 +543,7 @@ app.get("/api/feedback/:requestId", (req, res) => {
 // Mirror of the server/index.ts endpoint: inspects a contract function's
 // storage footprint via an RPC simulateTransaction call so clients can build
 // envelopes with the required read-only / read-write ledger keys pre-attached.
-app.post("/api/soroban/footprint/inspect", async (req, res) => {
+app.post("/api/soroban/footprint/inspect", enforceKillSwitch("soroban.submit"), async (req, res) => {
   try {
     const { contractId, functionName, args = [] } = req.body || {};
     if (typeof contractId !== "string" || !contractId)

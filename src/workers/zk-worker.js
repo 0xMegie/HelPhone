@@ -1,3 +1,4 @@
+import { installWorkerHooks } from "./workerSupervision.js";
 import {
   installWorkerLockdown,
   validateMessage,
@@ -300,6 +301,8 @@ function postToMain(message, transfer) {
   else self.postMessage(parsed.data);
 }
 
+// Error/heartbeat parity for null-origin workers (#793).
+installWorkerHooks(self, "zk-worker");
 self.onmessage = async (event) => {
   // Worker sandbox, layer 3: reject anything that is not a known request
   // before it can touch prover state.

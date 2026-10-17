@@ -34,6 +34,24 @@ export interface HelpDraft {
 
 export type GetDraftFn = () => Omit<HelpDraft, 'createdAt' | 'updatedAt'> | null | undefined
 
+export type ReplayVerdict =
+  | { allowed: true }
+  | { allowed: false; reason: 'blocked_by_kill_switch'; killSwitch: string; draftVersion: string; currentVersion: string }
+
+/**
+ * Stale-flag replay guard (#797). A draft composed under an older flag
+ * version is only resubmitted if the entrypoint it targets is still enabled
+ * now; otherwise the caller surfaces "blocked by kill-switch" instead of
+ * silently resubmitting to a killed path. The draft itself is kept.
+ */
+export function checkReplay(draft: HelpDraft, killSwitch = 'soroban.submit'): ReplayVerdict {
+  const draftVersion = draft.flagVersion ?? '0'
+  const currentVersion = currentFlagVersion()
+  if (compareFlagVersions(draftVersion, currentVersion) >= 0) return { allowed: true }
+  if (evaluateKillSwitch(killSwitch).enabled) return { allowed: true }
+  return { allowed: false, reason: 'blocked_by_kill_switch', killSwitch, draftVersion, currentVersion }
+}
+
 function isIndexedDBAvailable(): boolean {
   try {
     return typeof indexedDB !== 'undefined' && indexedDB !== null

@@ -33,3 +33,38 @@ export function recentIndexes(window: ExpertVerificationWindow, limit: number): 
   const count = Math.min(Math.max(Math.trunc(limit) || 0, 0), window.retained)
   return Array.from({ length: count }, (_, i) => window.total - 1 - i)
 }
+
+/**
+ * Fixed-capacity audit tape (#797): kill-switch changes, newest overwrites
+ * oldest. Capacity is fixed at construction so the tape never grows under
+ * memory pressure; `approxBytes` lets heap forensics (#793) account for it.
+ */
+export interface AuditEntry {
+  at: number
+  kind: string
+  from: string
+  to: string
+}
+
+export function createAuditTape(capacity = 64) {
+  const slots: Array<AuditEntry | undefined> = new Array(capacity)
+  let total = 0
+  return {
+    push(entry: AuditEntry): void {
+      slots[total % capacity] = entry
+      total += 1
+    },
+    /** Retained entries, oldest first. */
+    entries(): AuditEntry[] {
+      const w = verificationWindow(total, capacity)
+      return Array.from({ length: w.retained }, (_, i) => slots[(w.oldest + i) % capacity]!)
+    },
+    get total(): number {
+      return total
+    },
+    /** Rough retained size: ~64 bytes per entry plus short strings. */
+    approxBytes(): number {
+      return Math.min(total, capacity) * 96
+    },
+  }
+}

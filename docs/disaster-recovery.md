@@ -96,3 +96,55 @@ In case of network partition, state corruption, or redeployment:
    ```bash
    stellar contract invoke --id <CONTRACT_ID> --source <ADMIN_KEY> -- restore_state --snapshot-file snapshots/snapshot-123456.json
    ```
+
+## Kill-switch runbook (#797)
+
+Kill-switches are versioned. Every flip bumps the global flag version.
+
+```bash
+curl -X POST https://<host>/api/flags \
+  -H "Authorization: Bearer $FLAGS_ADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"kills":{"soroban.submit":false}}'
+```
+
+How a kill propagates:
+
+1. **Server enforcement (immediate, all cohorts):** routes guarded by
+   `enforceKillSwitch(key)` return `503 kill_switch_active`. A request stamped
+   with an older `x-helphone-flag-version` than the kill gets
+   `409 quarantined`. It is held for review, not executed. Guarded today:
+   `telemetry.upload` → `/api/telemetry/rum` and `/api/telemetry/forensics`;
+   `soroban.submit` → `/api/soroban/footprint/inspect`. Transactions already
+   on-ledger cannot be undone. Attribute them through the flag version
+   recorded with each envelope.
+2. **WS push (foreground, online):** a Redis `helphone:flags:v1` message
+   becomes a `flags.patch` frame on `/events/ws`.
+3. **Poll fallback:** `GET /api/flags` every 15 s with exponential backoff up
+   to 5 min. It runs in background tabs and re-polls on `online` and
+   visibility change.
+4. **Tabs and workers:** the `helphone-flags` BroadcastChannel. Every worker
+   in `src/workers/*` reads the shared snapshot directly, so it never waits on
+   the main thread.
+
+Offline semantics (`KILL_SWITCH_POLICIES` in `src/lib/featureFlags.ts`):
+
+| Switch | TTL (fresh) | Max stale | When expired |
+|---|---|---|---|
+| `telemetry.upload` | 60 s | 24 h | fail closed |
+| `soroban.submit` | 60 s | 5 min | **fail open**: blocking a rescue is worse; the server still enforces |
+| `yjs.sync` | 60 s | 1 h | fail open |
+| `mapbox.highres` | 60 s | 1 h | fail closed |
+| `debug.verboseLogs` | 0 | 0 | fail closed (no flag can enable raw-PII logging) |
+
+Unknown flags: old clients ignore them. Experiments default open, and a
+known kill set to `false` wins.
+
+Crash recovery: drafts store their `flagVersion`. `checkReplay(draft)` refuses
+to resubmit a draft composed before a kill to a killed path, and the UI should
+show "blocked by kill-switch".
+
+Verify containment with `helphone_flag_version_reports_total{version,cohort}`
+and `helphone_flag_time_to_effect_seconds`. Propagation p50/p95 per cohort
+(foreground, background, intermittent, offline) still has to be measured in
+the mixed-cohort Playwright drill. Until that is done, assume offline devices
+adopt a kill only on reconnect, and rely on server enforcement.

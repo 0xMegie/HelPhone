@@ -1,3 +1,5 @@
+import { currentFlagVersion, evaluateKillSwitch, flagHeaders } from './featureFlags'
+
 const HEX = '0123456789abcdef'
 const TRACEPARENT_RE = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/
 
@@ -79,7 +81,7 @@ export function reportClientError(error: Error, componentStack?: string): string
   const traceparent = activeTraceparent ? childTraceparent(activeTraceparent) : createTraceparent()
   void fetch('/api/telemetry/errors', {
     method: 'POST',
-    headers: { 'content-type': 'application/json', traceparent },
+    headers: { 'content-type': 'application/json', traceparent, ...flagHeaders() },
     body: JSON.stringify({
       message: error.message,
       componentStack: componentStack?.slice(0, 2000),

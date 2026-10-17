@@ -197,6 +197,11 @@ export default defineConfig(({ mode }) => ({
           if (id.includes("mapbox-gl") || id.includes("react-map-gl"))
             return "mapbox";
 
+          // #795: Yjs and OpenTelemetry were competing inside one vendor blob;
+          // split so the perf-budget harness can cap and blame them separately.
+          if (/[\\/]node_modules[\\/](yjs|y-[\w-]+|lib0)[\\/]/.test(id)) return "yjs";
+          if (id.includes("@opentelemetry")) return "otel";
+
           // Stellar SDK - blockchain interactions
           if (
             id.includes("@stellar/stellar-sdk") ||
