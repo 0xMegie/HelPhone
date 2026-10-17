@@ -31,7 +31,7 @@ merges.** If the decision is deferred, the ADR still ships — with status
 | [ADR-019](ADR-019-compulsion-law-halt-doctrine.md) | Compulsion-Law Halt Doctrine: Jurisdiction-Triggered Data Isolation | Proposed | ISP-145 |
 | [ADR-020](ADR-020-triage-ethics-shedding-order.md) | Triage Ethics & Load-Shedding Order Under Overload | Proposed | ISP-146 |
 | [ADR-021](ADR-021-multi-vendor-cost-control.md) | Multi-Vendor Cost Control: Spending Envelopes & Kill-Switch Protocol | Proposed | ISP-147 |
-| [ADR-022](ADR-022-ble-proximity-relay.md) | BLE Proximity Relay: Authenticated Beacon Format & Shippable-Scope Decision | Deferred | ISP-113 / #783 |
+| [ADR-022](ADR-022-honest-dispatch-eta.md) | Honest Dispatch ETA: Ranges, Fatigue Pace, and Degraded-State Signalling | Proposed | ISP-105 / #775 |
 
 ---
 

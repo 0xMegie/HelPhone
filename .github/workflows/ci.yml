@@ -380,6 +380,11 @@ jobs:
       - name: License compliance & copyleft gate
         run: node scripts/license-compliance.js --no-write
 
+      # Refs #779 — fails on drift of the Barretenberg/Noir pins in
+      # crypto-pins.json (package-lock.json / Cargo.lock coupling).
+      - name: Crypto-core pin gate
+        run: node scripts/check-crypto-pins.js
+
       # Closes #599 — GitHub Security Advisory scan + minimum-patch plan.
       # Report-only here; scheduled patch PRs come from cve-patch-bot.yml.
       - name: CVE patch plan
