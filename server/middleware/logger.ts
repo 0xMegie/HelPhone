@@ -1,6 +1,10 @@
 import morgan from 'morgan'
 import type { Request, Response, NextFunction, RequestHandler } from 'express'
 import { getPool } from '../db/connection.js'
+import { redactUrl } from '../lib/redact.js'
+
+// Never log raw query strings: phone/lat/lng travel in them (#792).
+morgan.token('redacted-url', (req) => redactUrl((req as Request).originalUrl || req.url))
 
 /**
  * HTTP request logger middleware (upstream).
@@ -10,7 +14,9 @@ import { getPool } from '../db/connection.js'
  * for ingestion by log aggregators.
  */
 export const requestLogger: RequestHandler = morgan(
-  process.env.NODE_ENV === 'production' ? 'combined' : 'dev',
+  process.env.NODE_ENV === 'production'
+    ? ':remote-addr - :remote-user [:date[clf]] ":method :redacted-url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"'
+    : ':method :redacted-url :status :response-time ms - :res[content-length]',
 )
 
 /**
@@ -53,7 +59,7 @@ export function logger(opts: LoggerOptions = {}) {
         ts: new Date().toISOString(),
         traceId,
         method,
-        url: originalUrl,
+        url: redactUrl(originalUrl),
         status,
         durationMs: duration,
         bytes: len,

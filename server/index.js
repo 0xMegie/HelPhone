@@ -1,4 +1,6 @@
 import "./telemetryBootstrap.js";
+import { telemetryErrorHandler, shutdownTelemetry } from "./telemetry.js";
+import { clockSyncHandler } from "./lib/clockSync.js";
 import cluster from "node:cluster";
 import { createServer } from "node:http";
 import express from "express";
@@ -150,6 +152,7 @@ app.get("/metrics", (req, res) => {
   res.type("text/plain; version=0.0.4; charset=utf-8").send(renderMetrics());
 });
 app.post("/api/telemetry/errors", (req, res) => telemetryErrorHandler(req, res));
+app.get("/api/time", clockSyncHandler);
 
 // Behind a proxy (Render), req.ip is the proxy unless TRUST_PROXY is set to the
 // number of hops (e.g. "1"); whitelist matching and rate limiting both use it.

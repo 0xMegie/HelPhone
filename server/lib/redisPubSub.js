@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { extractTrace, injectTrace } from "./traceContext.js";
 
 const CHANNEL = "helphone:contract-events:v1";
 const localBus = new EventEmitter();
@@ -19,7 +20,7 @@ export async function connectEventBus({ redisUrl = process.env.REDIS_URL } = {})
       if (channel !== CHANNEL) return;
       try {
         const event = JSON.parse(message);
-        if (isContractEvent(event)) localBus.emit("event", event);
+        if (isContractEvent(event)) localBus.emit("event", withReceivedTrace(event));
       } catch (error) {
         console.error("[events:redis] discarded malformed event", error.message);
       }
@@ -44,14 +45,27 @@ function isContractEvent(value) {
     (value.tenantId === undefined || (typeof value.tenantId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value.tenantId)));
 }
 
-export async function publishContractEvent(event) {
+/**
+ * Subscriber side of the #791 contract: keep the publisher's traceId and expose
+ * its span as a link (fan-out → links, never a forced parent). Messages from
+ * pre-#791 publishers have no `trace` and pass through unchanged.
+ */
+function withReceivedTrace(event) {
+  const ctx = extractTrace(event);
+  if (!ctx) return event;
+  return { ...event, trace: { ...event.trace, traceId: ctx.traceId, links: [{ traceId: ctx.traceId, spanId: ctx.spanId }] } };
+}
+
+export async function publishContractEvent(event, { traceparent, tracestate } = {}) {
   if (!isContractEvent(event)) throw new TypeError("Invalid contract event");
+  const parent = traceparent || event.trace?.traceparent;
+  if (parent) event = injectTrace(event, parent, tracestate || event.trace?.tracestate);
   if (publisher) {
     const firstPublisher = await publisher.set(`helphone:event:seen:${event.id}`, "1", "EX", 60, "NX");
     if (firstPublisher !== "OK") return false;
     await publisher.publish(CHANNEL, JSON.stringify(event));
   }
-  else localBus.emit("event", event);
+  else localBus.emit("event", withReceivedTrace(event));
   return true;
 }
 

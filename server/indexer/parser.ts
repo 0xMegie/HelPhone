@@ -3,7 +3,13 @@
  *
  * Decodes XDR event topics and data into structured records
  * for storage in the PostgreSQL event_index table.
+ *
+ * #792: `raw.data` is redacted before it leaves the parser — free-text
+ * notes/memo are dropped, phone/contact pseudonymized (HMAC), coordinates
+ * coarsened to ~110 m. Typed lat/lng are kept for geo queries.
  */
+// @ts-ignore — plain JS helper shared with the Express server
+import { redactObject } from '../lib/redact.js';
 
 /** Parsed event types from the HelPhone contract */
 export type EventType = 'created' | 'accepted' | 'arrived' | 'resolved' | 'unknown' | 'federated_dispatch' | 'federated_ack';
@@ -60,7 +66,7 @@ export function parseEvent(topics: string[], data: any): ParsedEvent {
 
   const parsed: ParsedEvent = {
     eventType,
-    raw: { topics, data },
+    raw: { topics, data: redactObject(data) },
   };
 
   // Extract common fields from topics (indices depend on contract design)

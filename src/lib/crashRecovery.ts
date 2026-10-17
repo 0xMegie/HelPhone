@@ -8,6 +8,8 @@
  * DB: helphone_crash_recovery / drafts store / key: emergency_draft
  */
 
+import { currentTraceIds } from './telemetry'
+
 export const DB_NAME = 'helphone_crash_recovery'
 export const STORE_NAME = 'drafts'
 export const DRAFT_KEY = 'emergency_draft'
@@ -23,6 +25,9 @@ export interface HelpDraft {
   searchQuery: string
   // Optional extra fields (profile, map state, etc.)
   extra?: Record<string, unknown>
+  /** Join key back to the dispatch trace for post-crash forensics (#791). */
+  traceId?: string
+  spanId?: string
   createdAt: number
   updatedAt: number
 }
@@ -102,6 +107,7 @@ export async function saveDraft(partial: Omit<HelpDraft, 'createdAt' | 'updatedA
     location: partial.location ?? null,
     searchQuery: partial.searchQuery ?? '',
     extra: partial.extra,
+    ...(currentTraceIds() ?? {}),
     createdAt,
     updatedAt: now,
   }

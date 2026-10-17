@@ -1,3 +1,5 @@
+import { extractTrace, hopAttributes, parseTraceparent } from "../lib/traceContext.js";
+
 export function normalizeContractEvent(event, { source = "soroban", observedAt = new Date().toISOString() } = {}) {
   const id = event.id || event.pagingToken || `${event.ledger || "unknown"}:${event.txHash || event.transactionHash || "unknown"}:${event.topic || "event"}`;
   return {
@@ -10,7 +12,23 @@ export function normalizeContractEvent(event, { source = "soroban", observedAt =
     txHash: event.txHash || event.transactionHash || null,
     actor: event.actor || event.signer || null,
     payload: event.payload || event.value || event,
+    // #791: join key back to the submitting trace. Comes from the event's
+    // `trace` envelope, or from a `traceparent` recorded off-chain at submit
+    // time (Soroban itself carries no trace context). Absent → null, never a
+    // fresh poll-time trace.
+    traceparent: traceparentOf(event),
+    attributes: hopAttributes({
+      dispatchId: event.dispatchId ?? event.requestId,
+      txHash: event.txHash || event.transactionHash,
+      ledgerSeq: event.ledger,
+    }),
   };
+}
+
+function traceparentOf(event) {
+  const fromEnvelope = extractTrace(event);
+  if (fromEnvelope) return fromEnvelope.traceparent;
+  return parseTraceparent(event.traceparent) ? event.traceparent.toLowerCase() : null;
 }
 
 export class InMemoryAuditSink {

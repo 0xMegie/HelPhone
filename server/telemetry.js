@@ -1,6 +1,7 @@
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { scrubText } from "./lib/redact.js";
 
 let sdk;
 
@@ -28,13 +29,17 @@ export function traceIdFromRequest(req) {
 
 export function telemetryErrorHandler(req, res) {
   const traceId = traceIdFromRequest(req);
-  const { message, componentStack } = req.body || {};
+  const { message, componentStack, clientTs } = req.body || {};
+  const receivedAt = Date.now();
   console.error(JSON.stringify({
     event: "client_error",
     traceId,
-    message: typeof message === "string" ? message.slice(0, 500) : "Unknown client error",
-    componentStack: typeof componentStack === "string" ? componentStack.slice(0, 2000) : undefined,
-    timestamp: new Date().toISOString(),
+    message: typeof message === "string" ? scrubText(message.slice(0, 500)) : "Unknown client error",
+    componentStack: typeof componentStack === "string" ? scrubText(componentStack.slice(0, 2000)) : undefined,
+    // Event time (client clock) vs ingest time (server clock), kept apart for the incident tape (#794).
+    clientTs: Number.isFinite(clientTs) ? clientTs : undefined,
+    ingestDelayMs: Number.isFinite(clientTs) ? receivedAt - clientTs : undefined,
+    timestamp: new Date(receivedAt).toISOString(),
   }));
   res.status(202).json({ accepted: true, traceId });
 }
