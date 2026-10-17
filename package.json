@@ -61,6 +61,7 @@
     "security:license-gate": "node scripts/license-compliance.js --no-write",
     "licenses:generate": "node scripts/license-compliance.js",
     "build:release": "vite build && node scripts/license-compliance.js --out dist/licenses.json",
+    "security:crypto-pins": "node scripts/check-crypto-pins.js",
     "security:cve-patch": "node scripts/auto-patch-cve.js",
     "security:cve-patch:apply": "node scripts/auto-patch-cve.js --apply",
     "security:maintainer-keys": "node scripts/security/verify_maintainer_keys.js",

@@ -372,3 +372,21 @@ Known trade-offs: an opaque worker reports `crossOriginIsolated === false`, so `
 **Schema failures drop the payload rather than the worker.** A malformed message is a bug or an attack on one boundary, not a reason to tear down the prover; every drop is counted on the handle so callers can see them.
 
 **The rewrite is masked text substitution, not a regex over raw source.** Comments and string literals are blanked (same length, same offsets) before searching, so documentation mentioning `new Worker(` cannot be rewritten, and the injected import is only added when the module does not already import the launcher.
+
+---
+
+# Offline BLE Beacon Threat Model (ISP-113 / #783)
+
+Scope: the authenticated beacon prototype in `src/lib/bleRelay.ts` ([ADR-022](adr/ADR-022-ble-proximity-relay.md)). Server-mediated trust (`sessionKey.ts`, `passkey.ts`, `server/middleware/auth.ts`) does not exist on a BLE-only link, so a relay must verify before it forwards. Status: unit-tested only; no commodity-hardware red-team has been run.
+
+| Threat | Mitigation in the prototype | Residual risk |
+|---|---|---|
+| Forged beacon (e.g. fake "all clear") | Ed25519 signature checked against a station-provisioned signer set; unverified bytes are never forwarded | Signer key provisioning, rotation and revocation distribution are not implemented |
+| Beacon from a revoked/unknown key | `BleRelayGate.revoke()`; untrusted signers dropped | Revocation list distribution to offline devices is open |
+| Replay of an old valid beacon | Per-(signer, incident) monotonic `seq`; `issuedAt`/`expiresAt` with a 15-minute TTL cap | Replay state is in memory and lost on reboot; a new `seq` window after reboot is unsolved |
+| Future-dated or long-lived beacon | 30 s skew cap, TTL cap | Depends on device clocks being roughly correct |
+| Same beacon amplified through several relays | Duplicate `seq` dropped at the gate | Not yet integrated with `syncManager.ts` dedup |
+| Beacon flood / queue poisoning | Per-source rate limit, bounded reassembly (16 partials, 2 KiB), bounded priority queue | Rate limit is per source id, which is attacker-chosen if sources are not authenticated at the link layer |
+| Connection-spam battery drain | Not mitigated (no scan duty cycling or connection throttling) | Open; needs radio measurements |
+| Corrupted fragments | CRC-32 over the whole message before decode | CRC is an integrity check, not authentication; authenticity rests on the signature |
+| Telemetry saturating the bearer | `isPayloadAllowedOnBearer()` embargoes telemetry and bulk CRDT on `ble-trickle` | Call sites are not wired to it yet |
