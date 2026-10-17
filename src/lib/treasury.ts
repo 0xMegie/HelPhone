@@ -78,3 +78,124 @@ export const ORACLE_ERROR_MESSAGES: Record<OracleErrorKind, string> = {
   "not-configured": "No price oracle is configured for this DAO.",
   unknown: "Could not fetch a conversion quote.",
 };
+
+// ── Federation Settlement & Cross-Instance IOUs (ISP-144) ──────────────────
+
+export interface CrossInstanceIou {
+  iouId: string
+  debtorInstance: string    // Deployment receiving aid (who owes)
+  creditorInstance: string  // Deployment providing responders (who is owed)
+  incidentId: string
+  stroops: number           // Value in stroops (7 decimals)
+  status: 'issued' | 'netted' | 'defaulted'
+  issuedAt: number
+  nettedAt?: number
+  settlementProposalId?: number
+  feeStroops?: number
+  notes?: string
+}
+
+export interface NettingResult {
+  debtorInstance: string
+  creditorInstance: string
+  netStroops: number
+  nettedIouIds: string[]
+  settlementTimestamp: number
+}
+
+export function issueCrossInstanceIou(params: {
+  debtorInstance: string
+  creditorInstance: string
+  incidentId: string
+  stroops: number
+  feeStroops?: number
+  notes?: string
+}): CrossInstanceIou {
+  const iouId = `iou_${params.debtorInstance}_${params.creditorInstance}_${params.incidentId}`
+  return {
+    iouId,
+    debtorInstance: params.debtorInstance,
+    creditorInstance: params.creditorInstance,
+    incidentId: params.incidentId,
+    stroops: params.stroops,
+    status: 'issued',
+    issuedAt: Date.now(),
+    feeStroops: params.feeStroops ?? 100,
+    notes: params.notes,
+  }
+}
+
+export function netCrossInstanceIous(
+  ious: CrossInstanceIou[],
+  instanceA: string,
+  instanceB: string
+): {
+  netResult: NettingResult
+  updatedIous: CrossInstanceIou[]
+} {
+  const activeIous = ious.filter(
+    (iou) =>
+      iou.status === 'issued' &&
+      ((iou.debtorInstance === instanceA && iou.creditorInstance === instanceB) ||
+       (iou.debtorInstance === instanceB && iou.creditorInstance === instanceA))
+  )
+
+  let balanceAtoB = 0
+  for (const iou of activeIous) {
+    if (iou.debtorInstance === instanceA && iou.creditorInstance === instanceB) {
+      balanceAtoB += iou.stroops
+    } else if (iou.debtorInstance === instanceB && iou.creditorInstance === instanceA) {
+      balanceAtoB -= iou.stroops
+    }
+  }
+
+  const now = Date.now()
+  const debtor = balanceAtoB >= 0 ? instanceA : instanceB
+  const creditor = balanceAtoB >= 0 ? instanceB : instanceA
+  const netStroops = Math.abs(balanceAtoB)
+  const nettedIouIds = activeIous.map((i) => i.iouId)
+
+  const updatedIous = ious.map((iou) => {
+    if (nettedIouIds.includes(iou.iouId)) {
+      return { ...iou, status: 'netted' as const, nettedAt: now }
+    }
+    return iou
+  })
+
+  return {
+    netResult: {
+      debtorInstance: debtor,
+      creditorInstance: creditor,
+      netStroops,
+      nettedIouIds,
+      settlementTimestamp: now,
+    },
+    updatedIous,
+  }
+}
+
+export function escalateUnpaidIouToDao(
+  iou: CrossInstanceIou,
+  reason = 'Overdue cross-instance aid settlement'
+): {
+  proposalType: 'FundAllocation'
+  title: string
+  description: string
+  action: 'dao_vote_writeoff'
+  iou: CrossInstanceIou
+} {
+  const updatedIou: CrossInstanceIou = {
+    ...iou,
+    status: 'defaulted',
+    notes: `${iou.notes || ''} [DEFAULT: ${reason}]`.trim(),
+  }
+
+  return {
+    proposalType: 'FundAllocation',
+    title: `[Federation Default] Cross-Instance IOU ${iou.iouId}`,
+    description: `Peer instance ${iou.debtorInstance} has defaulted on ${formatStroops(iou.stroops)} XLM aid reimbursement for incident ${iou.incidentId}. Reason: ${reason}. Escalated to DAO vote for emergency treasury recovery or mutual aid write-off.`,
+    action: 'dao_vote_writeoff',
+    iou: updatedIou,
+  }
+}
+

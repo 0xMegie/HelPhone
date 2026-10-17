@@ -98,3 +98,42 @@ function raycast(lat: number, lng: number, vertices: Array<[number, number]>): b
   }
   return inside
 }
+
+export type DwellEvent = 'enter' | 'exit' | null
+
+/**
+ * Dwell-debounced geofence state (#803). Drifting or switching position
+ * sources flips raw containment many times a minute; only report `enter`
+ * after `enterMs` continuously inside and `exit` after `exitMs` outside.
+ */
+export class GeofenceDwellTracker {
+  private inside: boolean | null = null
+  private pending: { inside: boolean; since: number } | null = null
+
+  constructor(
+    private readonly polygon: ShelterPolygon,
+    private readonly enterMs = 10_000,
+    private readonly exitMs = 20_000,
+  ) {}
+
+  get isInside(): boolean | null {
+    return this.inside
+  }
+
+  update(lat: number, lng: number, now = Date.now()): DwellEvent {
+    const raw = isInsideShelterPolygon(lat, lng, this.polygon)
+    if (raw === this.inside) {
+      this.pending = null
+      return null
+    }
+    if (!this.pending || this.pending.inside !== raw) {
+      this.pending = { inside: raw, since: now }
+    }
+    // First fix ever: adopt immediately so the UI is not blank for 10 s.
+    const wait = this.inside === null ? 0 : raw ? this.enterMs : this.exitMs
+    if (now - this.pending.since < wait) return null
+    this.inside = raw
+    this.pending = null
+    return raw ? 'enter' : 'exit'
+  }
+}

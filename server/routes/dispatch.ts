@@ -442,6 +442,94 @@ export function createDispatchRouters(opts: DispatchRouterOptions = {}) {
     res.set('Cache-Control', 'no-store').json({ success: true, requestId, envelopes })
   })
 
+  // ── Cross-Instance Federated Dispatch (ISP-144) ───────────────────────
+  const federatedDispatches = new Map<string, {
+    incidentId: string
+    responder: string
+    targetInstance: string
+    status: 'dispatched' | 'acknowledged' | 'failed'
+    dispatchedAt: number
+    acknowledgedAt?: number
+    custodyMarker: 'local_verified' | 'peer_asserted'
+  }>()
+
+  api.post('/', (req: Request, res: Response) => {
+    const { incident_id, incidentId, responder, target_instance, targetInstance } = req.body || {}
+    const incId = incident_id || incidentId
+    const target = target_instance || targetInstance
+
+    if (!incId) {
+      res.status(400).json({ success: false, error: 'incident_id is required' })
+      return
+    }
+    if (!responder) {
+      res.status(400).json({ success: false, error: 'responder is required' })
+      return
+    }
+
+    if (!target) {
+      // Local-only lookup check: if incident not in local ledger/cache, reject
+      res.status(404).json({ success: false, error: `Unknown incident ${incId}: local responders only` })
+      return
+    }
+
+    // Federated dispatch origination
+    const record = {
+      incidentId: incId,
+      responder,
+      targetInstance: target,
+      status: 'dispatched' as const,
+      dispatchedAt: Date.now(),
+      custodyMarker: 'local_verified' as const,
+    }
+    federatedDispatches.set(incId, record)
+    res.json({
+      success: true,
+      message: `Federated dispatch initiated to ${target}`,
+      dispatch: record,
+    })
+  })
+
+  api.post('/ack', (req: Request, res: Response) => {
+    const { incidentId, incident_id, responder, sourceInstance } = req.body || {}
+    const id = incidentId || incident_id
+    if (!id) {
+      res.status(400).json({ success: false, error: 'incidentId is required' })
+      return
+    }
+
+    const existing = federatedDispatches.get(id)
+    if (existing) {
+      existing.status = 'acknowledged'
+      existing.acknowledgedAt = Date.now()
+      res.json({ success: true, message: 'Dispatch acknowledged', dispatch: existing })
+      return
+    }
+
+    const record = {
+      incidentId: id,
+      responder: responder || 'peer-responder',
+      targetInstance: sourceInstance || 'peer-instance',
+      status: 'acknowledged' as const,
+      dispatchedAt: Date.now(),
+      acknowledgedAt: Date.now(),
+      custodyMarker: 'peer_asserted' as const,
+    }
+    federatedDispatches.set(id, record)
+    res.json({ success: true, message: 'Foreign acknowledgement recorded', dispatch: record })
+  })
+
+  api.get('/status/:incidentId', (req: Request, res: Response) => {
+    const { incidentId } = req.params
+    const dispatch = federatedDispatches.get(incidentId)
+    if (!dispatch) {
+      res.status(404).json({ success: false, error: 'Dispatch record not found' })
+      return
+    }
+    res.json({ success: true, dispatch })
+  })
+
+
   const metrics = Router()
   metrics.get('/dispatch', (_req: Request, res: Response) => {
     res

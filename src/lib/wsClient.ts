@@ -124,3 +124,84 @@ export class WsClient {
     this.ws?.close();
   }
 }
+
+// ── Replay Cache & Peer Dialing (ISP-144) ──────────────────────────────────
+
+export class ReplayCache {
+  private cache = new Map<string, number>();
+  private readonly windowMs: number;
+
+  constructor(windowMs = 300_000) {
+    this.windowMs = windowMs;
+  }
+
+  checkAndAdd(nonce: string, timestamp = Date.now()): boolean {
+    this.cleanup(timestamp);
+    if (this.cache.has(nonce)) return false;
+    this.cache.set(nonce, timestamp);
+    return true;
+  }
+
+  has(nonce: string): boolean {
+    return this.cache.has(nonce);
+  }
+
+  size(): number {
+    return this.cache.size;
+  }
+
+  private cleanup(now: number): void {
+    for (const [nonce, ts] of this.cache) {
+      if (now - ts > this.windowMs) {
+        this.cache.delete(nonce);
+      }
+    }
+  }
+}
+
+export interface PeerDialingOptions extends WsClientOptions {
+  localInstanceId: string;
+  peerInstanceId: string;
+  signingKey?: string;
+  onPeerHandshake?: (status: 'authenticating' | 'authenticated' | 'rejected') => void;
+}
+
+export class PeerDialingClient extends WsClient {
+  readonly localInstanceId: string;
+  readonly peerInstanceId: string;
+  private readonly replayCache = new ReplayCache();
+  private peerAuthenticated = false;
+
+  constructor(private peerOptions: PeerDialingOptions) {
+    super(peerOptions);
+    this.localInstanceId = peerOptions.localInstanceId;
+    this.peerInstanceId = peerOptions.peerInstanceId;
+  }
+
+  sendFederatedEnvelope(envelope: { nonce: string; senderInstance: string; recipientInstance: string; [key: string]: unknown }): boolean {
+    if (envelope.recipientInstance !== this.peerInstanceId) {
+      return false;
+    }
+    if (!this.replayCache.checkAndAdd(envelope.nonce)) {
+      console.warn(`[PeerDialing] Dropping duplicate nonce: ${envelope.nonce}`);
+      return false;
+    }
+    this.send({
+      type: 'peer-relay',
+      senderInstance: this.localInstanceId,
+      peerInstance: this.peerInstanceId,
+      envelope,
+    });
+    return true;
+  }
+
+  isPeerAuthenticated(): boolean {
+    return this.peerAuthenticated;
+  }
+
+  markPeerAuthenticated(authenticated: boolean): void {
+    this.peerAuthenticated = authenticated;
+    this.peerOptions.onPeerHandshake?.(authenticated ? 'authenticated' : 'rejected');
+  }
+}
+

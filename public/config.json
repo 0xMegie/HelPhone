@@ -43,6 +43,13 @@
     "experimental_zk_v2": {
       "enabled": false,
       "rolloutPercentage": 0
+    },
+    "foldable_resilience": {
+      "enabled": true,
+      "rolloutPercentage": 100,
+      "targets": {
+        "environments": ["production", "staging", "development"]
+      }
     }
   }
 }

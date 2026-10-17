@@ -8,7 +8,7 @@
  * DB: helphone_crash_recovery / drafts store / key: emergency_draft
  */
 
-import { currentFlagVersion, evaluateKillSwitch, compareFlagVersions } from './featureFlags'
+import { currentTraceIds } from './telemetry'
 
 export const DB_NAME = 'helphone_crash_recovery'
 export const STORE_NAME = 'drafts'
@@ -25,8 +25,9 @@ export interface HelpDraft {
   searchQuery: string
   // Optional extra fields (profile, map state, etc.)
   extra?: Record<string, unknown>
-  /** Kill-switch snapshot version the draft was composed under (#797). */
-  flagVersion?: string
+  /** Join key back to the dispatch trace for post-crash forensics (#791). */
+  traceId?: string
+  spanId?: string
   createdAt: number
   updatedAt: number
 }
@@ -124,7 +125,7 @@ export async function saveDraft(partial: Omit<HelpDraft, 'createdAt' | 'updatedA
     location: partial.location ?? null,
     searchQuery: partial.searchQuery ?? '',
     extra: partial.extra,
-    flagVersion: partial.flagVersion ?? currentFlagVersion(),
+    ...(currentTraceIds() ?? {}),
     createdAt,
     updatedAt: now,
   }

@@ -7,6 +7,60 @@ on:
     branches: [ main ]
 
 jobs:
+  # ── CODEOWNERS enforcement ───────────────────────────────────────────────────
+  # Validates that CODEOWNERS is syntactically correct and that every path
+  # pattern resolves to at least one owner. A PR that silently has no required
+  # reviewer (e.g., because a path glob was mis-typed) is treated as a
+  # policy failure, not a free-pass.
+  #
+  # ONBOARDING NOTE: If this job fails, check .github/CODEOWNERS for:
+  #   - Typos in path patterns (use `git check-ignore -v --no-index <path>` to test)
+  #   - Owner handles that do not exist on GitHub (handles are case-sensitive)
+  #   - Duplicate or conflicting rules
+  #
+  # See docs/review-policy.md for the per-subsystem review checklists.
+  codeowners-lint:
+    name: CODEOWNERS — Syntax & Coverage Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Verify CODEOWNERS file exists
+        run: |
+          if [ ! -f .github/CODEOWNERS ]; then
+            echo "✗ .github/CODEOWNERS is missing."
+            echo "  Every repository must have a CODEOWNERS file to route reviews"
+            echo "  to the correct expert. See docs/review-policy.md."
+            exit 1
+          fi
+          echo "✓ .github/CODEOWNERS exists"
+
+      - name: Validate CODEOWNERS syntax (no empty owner lines)
+        run: |
+          # Reject any non-comment, non-blank line that has a path but no owner.
+          # Pattern: a line that starts with a path character but has no @ after whitespace.
+          BAD=$(grep -nP '^[^#\s]' .github/CODEOWNERS | grep -v '@' || true)
+          if [ -n "$BAD" ]; then
+            echo "✗ CODEOWNERS has path lines with no owner:"
+            echo "$BAD"
+            echo "  Every path pattern must have at least one @owner."
+            exit 1
+          fi
+          echo "✓ All CODEOWNERS path lines have at least one owner"
+
+      - name: Count subsystem coverage entries
+        run: |
+          ENTRY_COUNT=$(grep -c '^[^#]' .github/CODEOWNERS || true)
+          echo "CODEOWNERS entries: $ENTRY_COUNT"
+          if [ "$ENTRY_COUNT" -lt 10 ]; then
+            echo "⚠ Fewer than 10 CODEOWNERS entries — this may indicate incomplete coverage."
+            echo "  Check docs/bus-factor-ledger.md for subsystems that need owners."
+          else
+            echo "✓ CODEOWNERS coverage looks sufficient ($ENTRY_COUNT entries)"
+          fi
+
   quality-and-security-matrix:
     name: Code Quality, Type Check, Cryptography & State Export Verification
     runs-on: ubuntu-latest

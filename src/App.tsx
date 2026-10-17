@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { FeatureFlagProvider, useFeatureFlag } from './lib/featureFlags.js'
 import { WalletProvider } from './contexts/WalletContext.js'
 import LanguageSwitcher from './components/LanguageSwitcher'
+import ProvenanceBadge from './components/ProvenanceBadge.jsx'
 
 function AppContent() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -105,6 +106,7 @@ function AppContent() {
               🛡️ State Backup Active
             </span>
           )}
+          <ProvenanceBadge />
           <LanguageSwitcher />
         </div>
       </nav>

@@ -1,4 +1,6 @@
 import "./telemetryBootstrap.js";
+import { telemetryErrorHandler, shutdownTelemetry } from "./telemetry.js";
+import { clockSyncHandler } from "./lib/clockSync.js";
 import cluster from "node:cluster";
 import { createServer } from "node:http";
 import express from "express";
@@ -25,17 +27,10 @@ import {
 import { startMaintenanceScheduler } from "./db/maintenance.js";
 import { getMaintenanceConfig } from "./env.js";
 import { createPasskeyAuthRouter } from "./routes/passkey-auth.js";
-import { renderMetrics } from "./middleware/metrics.js";
-import {
-  divergenceHandler,
-  enforceKillSwitch,
-  flagsHandler,
-  forensicIngestHandler,
-  renderTelemetryMetrics,
-  rumIngestHandler,
-  setFlagsHandler,
-  telemetryErrorHandler,
-} from "./telemetry.js";
+import { createFederationRouter } from "./routes/federation.js";
+import { createDispatchRouters } from "./routes/dispatch.js";
+import { syncRouter } from "./routes/sync.js";
+import historyRouter from "./routes/history.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -157,19 +152,7 @@ app.get("/metrics", (req, res) => {
   res.type("text/plain; version=0.0.4; charset=utf-8").send(renderMetrics() + renderTelemetryMetrics());
 });
 app.post("/api/telemetry/errors", (req, res) => telemetryErrorHandler(req, res));
-// sendBeacon bodies may arrive as text/plain; parse those as JSON too (64KB cap).
-const beaconJson = express.json({ limit: "64kb", type: ["application/json", "text/plain"] });
-const telemetryKill = enforceKillSwitch("telemetry.upload");
-app.post("/api/telemetry/forensics", beaconJson, telemetryKill, forensicIngestHandler);
-app.post("/api/telemetry/rum", beaconJson, telemetryKill, rumIngestHandler);
-app.get("/api/telemetry/divergence", divergenceHandler);
-// Kill-switches (#797): poll fallback for clients + incident-command write path.
-app.get("/api/flags", flagsHandler);
-app.post("/api/flags", (req, res, next) => {
-  const token = process.env.FLAGS_ADMIN_TOKEN;
-  if (!token || req.get("authorization") !== `Bearer ${token}`) return res.status(401).end();
-  next();
-}, setFlagsHandler);
+app.get("/api/time", clockSyncHandler);
 
 // Behind a proxy (Render), req.ip is the proxy unless TRUST_PROXY is set to the
 // number of hops (e.g. "1"); whitelist matching and rate limiting both use it.
@@ -198,6 +181,12 @@ if (process.env.NODE_ENV !== "test") {
   app.use(rateLimiter);
 }
 app.use("/api/auth/passkey", createPasskeyAuthRouter());
+const dispatchRouters = createDispatchRouters();
+app.use("/api/dispatch", dispatchRouters.api);
+app.use("/metrics", dispatchRouters.metrics);
+app.use("/api/sync", syncRouter);
+app.use("/api/history", historyRouter);
+app.use("/api/federation", createFederationRouter());
 
 // ── Contract event bridge ────────────────────────────────────────
 // Issue #177: the frontend used to poll the contract directly on a timer
