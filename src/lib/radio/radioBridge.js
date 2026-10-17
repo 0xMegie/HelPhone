@@ -72,7 +72,9 @@ export function createRadioBridge({
     for (const fn of listeners) {
       try {
         fn(event);
-      } catch {}
+      } catch {
+        // best-effort — surface failures are non-fatal here
+      }
     }
   }
 

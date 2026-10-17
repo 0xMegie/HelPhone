@@ -24,7 +24,9 @@ function readStore() {
 function writeStore(store) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
 }
 
 export function isFlagEnabled(flagName) {

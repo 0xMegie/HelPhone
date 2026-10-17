@@ -176,7 +176,9 @@ export function createScheduler({
     ) {
       try {
         item.meta.onSent();
-      } catch {}
+      } catch {
+        // best-effort — surface failures are non-fatal here
+      }
     }
 
     lastPickCounts = lastPickCounts.map((c, idx) =>

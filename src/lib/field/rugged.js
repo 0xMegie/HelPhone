@@ -34,14 +34,18 @@ export function getRuggedMode(win = globalThis) {
     const stored = win.localStorage.getItem(STORAGE_KEY);
     if (stored === "1") return true;
     if (stored === "0") return false;
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
   return detectRuggedDevice(win);
 }
 
 export function setRuggedMode(on, win = globalThis) {
   try {
     win.localStorage.setItem(STORAGE_KEY, on ? "1" : "0");
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
   applyRuggedDom(on, win);
   return !!on;
 }
@@ -52,5 +56,7 @@ export function applyRuggedDom(on, win = globalThis) {
     if (!root) return;
     if (on) root.setAttribute("data-rugged", "1");
     else root.removeAttribute("data-rugged");
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
 }

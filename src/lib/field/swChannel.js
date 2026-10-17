@@ -18,7 +18,9 @@ function bc() {
       channel = new BroadcastChannel(CHANNEL_NAME);
       return channel;
     }
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
   return null;
 }
 
@@ -29,12 +31,16 @@ export function postSwMessage(type, payload = {}) {
   if (c) {
     try {
       c.postMessage(msg);
-    } catch {}
+    } catch {
+      // best-effort — surface failures are non-fatal here
+    }
   }
   try {
     const reg = navigator.serviceWorker && navigator.serviceWorker.controller;
     if (reg) reg.postMessage(msg);
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
   return msg;
 }
 
@@ -50,13 +56,17 @@ export function subscribeSwMessages(handler) {
       swListener = (event) => handler(event.data);
       navigator.serviceWorker.addEventListener("message", swListener);
     }
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
   return () => {
     try {
       c.removeEventListener("message", listener);
       if (swListener)
         navigator.serviceWorker.removeEventListener("message", swListener);
-    } catch {}
+    } catch {
+      // best-effort — surface failures are non-fatal here
+    }
   };
 }
 
@@ -72,7 +82,9 @@ function readBgQueue() {
 function writeBgQueue(items) {
   try {
     localStorage.setItem(BG_TX_KEY, JSON.stringify(items.slice(-200)));
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
 }
 
 /**

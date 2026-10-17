@@ -70,6 +70,37 @@ const PII_VALUE_PATTERNS = [
 
 export { PII_VALUE_PATTERNS, SECRET_VALUE_PATTERNS };
 
+// #792 — request PII (not secrets). Used by `--scan` on logs, trace exports
+// and contract-state snapshots; not applied to the JS bundle, where source
+// coordinates/phone formats would false-positive.
+export const PII_PATTERNS = [
+  { name: "e164-phone", re: /\+[1-9]\d{7,14}\b/g },
+  { name: "email", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g },
+  // Coordinate pairs finer than geohash-7 (>= 4 decimals).
+  {
+    name: "precise-coordinate",
+    re: /"(lat|lng|lon|latitude|longitude)"\s*:\s*"?-?\d{1,3}\.\d{4,}/gi,
+  },
+  {
+    name: "free-text-note",
+    re: /"(notes?|memo|description)"\s*:\s*"(?!\[redacted)[^"]{1,}"/gi,
+  },
+  {
+    name: "raw-query-pii",
+    re: /[?&](phone|contact|name|lat|lng)=(?!hmac%3A|hmac:)[^&\s"]+/gi,
+  },
+];
+
+export function scanForPII(text) {
+  const findings = [];
+  for (const { name, re } of PII_PATTERNS) {
+    re.lastIndex = 0;
+    const hits = text.match(re);
+    if (hits) findings.push({ kind: `pii:${name}`, count: hits.length });
+  }
+  return findings;
+}
+
 // Snapshot before the Proxy below hides sensitive keys (spreads/reads
 // through process.env afterwards would no longer see them).
 const RAW_ENV = { ...process.env };
@@ -369,19 +400,34 @@ if (argv[0] === "--audit") {
   if (findings.length > 0) process.exit(1);
   console.log("env-firewall: bundle audit OK");
 } else if (argv[0] === "--scan") {
-  // ISP-130: scan a file (e.g. a PII fixture or an un-scrubbed log slice)
-  // for secrets + PII. Exit 1 when anything is found.
-  const target = argv[1];
-  if (!target || !fs.existsSync(target)) {
-    console.error(`env-firewall --scan: file not found: ${target || "<path>"}`);
+  // node scripts/security/env_firewall.js --scan <file...>
+  // Scans each file for secrets + PII (ISP-130 scanForPii with samples, and
+  // #792 scanForPII on raw logs/trace exports). Exit 1 when anything is found.
+  const targets = argv.slice(1);
+  if (targets.length === 0) {
+    console.error("env-firewall --scan: provide one or more file paths");
     process.exit(2);
   }
-  const findings = scanForPii(fs.readFileSync(target, "utf8"));
-  for (const f of findings) {
-    console.error(`PII/SECRET ${f.name} x${f.count} e.g. ${f.sample}`);
+  let total = 0;
+  for (const file of targets) {
+    if (!fs.existsSync(file)) {
+      console.error(`env-firewall --scan: file not found: ${file}`);
+      process.exit(2);
+    }
+    const text = fs.readFileSync(file, "utf8");
+    for (const f of scanForPii(text)) {
+      total += f.count;
+      console.error(
+        `PII/SECRET ${f.name} x${f.count} e.g. ${f.sample} in ${file}`,
+      );
+    }
+    for (const f of scanForPII(text)) {
+      total += f.count;
+      console.error(`PII ${f.kind} x${f.count} in ${file}`);
+    }
   }
-  if (findings.length > 0) process.exit(1);
-  console.log("env-firewall: scan OK (no secrets/PII found)");
+  if (total > 0) process.exit(1);
+  console.log("env-firewall: PII scan OK");
 } else if (argv[0] === "--exec") {
   // Spawn the child with the firewall preloaded (NODE_OPTIONS --import)
   // so env reads + network are guarded inside the child too. Secrets stay

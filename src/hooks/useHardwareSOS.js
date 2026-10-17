@@ -158,7 +158,9 @@ export function useHardwareSOS({
         ms.setActionHandler("playpause", () => togglePtt());
         mediaHandlers = true;
       }
-    } catch {}
+    } catch {
+      // best-effort — surface failures are non-fatal here
+    }
 
     return () => {
       document.removeEventListener("keydown", onKeyDown);
@@ -168,7 +170,9 @@ export function useHardwareSOS({
         try {
           navigator.mediaSession.setActionHandler("previoustrack", null);
           navigator.mediaSession.setActionHandler("playpause", null);
-        } catch {}
+        } catch {
+          // best-effort — surface failures are non-fatal here
+        }
       }
     };
   }, [flagOn, commit, togglePtt, onNeedsConfirm]);

@@ -68,7 +68,12 @@ test.describe("Field tools — rugged mode (ISP-131)", () => {
     await expect(page.getByTestId("rugged-toggle")).toHaveAttribute("aria-checked", "true");
 
     const sizes = await page.evaluate(() => {
-      const els = [...document.querySelectorAll(".hp-fieldops-btn, .hp-help-sidebar button")];
+      // CSS-modules hashed class names: match by data-testid parent + substring.
+      const els = [
+        ...document.querySelectorAll(
+          '[data-testid="field-ops-card"] button, [class*="hp-help-sidebar"] button',
+        ),
+      ];
       return els.slice(0, 12).map((el) => {
         const r = el.getBoundingClientRect();
         return { h: r.height, w: r.width };

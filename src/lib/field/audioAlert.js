@@ -27,7 +27,9 @@ export function vibrate(pattern) {
     ) {
       return globalThis.navigator.vibrate(pattern);
     }
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
   return false;
 }
 
@@ -73,10 +75,14 @@ export function duck(ms = 600, level = 0.25) {
     duckTimer = setTimeout(() => {
       try {
         masterGain.gain.setTargetAtTime(1, ac.currentTime, 0.08);
-      } catch {}
+      } catch {
+        // best-effort — surface failures are non-fatal here
+      }
       duckTimer = null;
     }, ms);
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
 }
 
 /** Loud multimodal confirmation for gloved/noisy conditions. */

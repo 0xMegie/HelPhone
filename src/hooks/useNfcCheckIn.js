@@ -45,7 +45,9 @@ export function useNfcCheckIn({
   const stopScan = useCallback(() => {
     try {
       if (abortRef.current) abortRef.current.abort();
-    } catch {}
+    } catch {
+      // best-effort — surface failures are non-fatal here
+    }
     abortRef.current = null;
     setScanning(false);
   }, []);
@@ -222,7 +224,9 @@ function loadRoster() {
 function persistRoster(roster) {
   try {
     localStorage.setItem(ROSTER_STORAGE, JSON.stringify(roster.slice(0, 200)));
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
 }
 
 function hydrateStore(store, roster) {

@@ -35,7 +35,9 @@ export function loadPortPref() {
 export function savePortPref(pref) {
   try {
     localStorage.setItem(PORT_PREF_KEY, JSON.stringify(pref));
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
 }
 
 /**
@@ -106,7 +108,9 @@ export function createSerialTransport({
       } finally {
         try {
           reader.releaseLock();
-        } catch {}
+        } catch {
+          // best-effort — surface failures are non-fatal here
+        }
         reader = null;
       }
     }
@@ -128,13 +132,17 @@ export function createSerialTransport({
     if (reader) {
       try {
         await reader.cancel();
-      } catch {}
+      } catch {
+        // best-effort — surface failures are non-fatal here
+      }
       reader = null;
     }
     if (port) {
       try {
         await port.close();
-      } catch {}
+      } catch {
+        // best-effort — surface failures are non-fatal here
+      }
       port = null;
     }
   }

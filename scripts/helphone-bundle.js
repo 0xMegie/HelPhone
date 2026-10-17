@@ -174,7 +174,9 @@ function clientFlagSnapshot() {
         if (versions[i] != null) defaults[k].version = versions[i];
       });
     }
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
   return defaults;
 }
 

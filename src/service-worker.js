@@ -3,6 +3,7 @@ import { registerRoute } from "workbox-routing";
 import { CacheFirst, StaleWhileRevalidate } from "workbox-strategies";
 import { ExpirationPlugin } from "workbox-expiration";
 import { CacheableResponsePlugin } from "workbox-cacheable-response";
+import { createPartialResponse } from "workbox-range-requests";
 
 cleanupOutdatedCaches();
 
@@ -21,26 +22,46 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((cacheNames) => {
-        return Promise.all(
-          cacheNames.map((cacheName) => {
-            if (cacheName !== CACHE_NAME) {
-              return caches.delete(cacheName);
-            }
-          }),
-        );
-      })
-      .then(() => {
-        self.clients.claim();
-      }),
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cacheName) => {
+          if (cacheName !== CACHE_NAME && cacheName !== "helphone-zk-assets-v1") {
+            return caches.delete(cacheName);
+          }
+        }),
+      );
+    }).then(() => {
+      self.clients.claim();
+    })
   );
 });
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
+
+  if (
+    request.method === "GET" &&
+    url.origin === self.location.origin &&
+    /\/zk-assets\/aegis\.chunk\d{4}$/.test(url.pathname)
+  ) {
+    event.respondWith((async () => {
+      const cache = await caches.open("helphone-zk-assets-v1");
+      const key = new Request(url.href, { method: "GET" });
+      let full = await cache.match(key);
+      if (!full) {
+        full = await fetch(key);
+        if (full.ok) await cache.put(key, full.clone());
+      }
+      if (!request.headers.has("range") || !full.ok) return full;
+      try {
+        return await createPartialResponse(request, full);
+      } catch {
+        return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${full.headers.get("content-length") || 0}` } });
+      }
+    })());
+    return;
+  }
 
   if (url.pathname === "/") {
     event.respondWith(
@@ -128,7 +149,39 @@ self.addEventListener("fetch", (event) => {
 });
 
 self.addEventListener("message", (event) => {
-  if (event.data && event.data.type === "SKIP_WAITING") {
+  const data = event.data || {};
+
+  // CRDT sync: forward the local state change to the backend sync endpoint.
+  if (data.type === "CRDT_SYNC") {
+    event.waitUntil(
+      fetch("/api/sync", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(data.payload),
+      }),
+    );
+  }
+
+  // Contract update events and CRDT/state sync (issue #516): reflect the
+  // message to every other open window client so a single leader's poll or
+  // SSE result reaches all tabs without each tab owning a subscription.
+  if (data.type === "CONTRACT_EVENT" || data.type === "CRDT_SYNC" || data.type === "STATE_SYNC") {
+    event.waitUntil(
+      self.clients
+        .matchAll({ type: "window", includeUncontrolled: true })
+        .then((clients) => {
+          return Promise.all(
+            clients.map((client) => {
+              if (client === event.source) return Promise.resolve();
+              return client.postMessage({ ...data, source: data.source || "service-worker" });
+            }),
+          );
+        })
+        .catch(() => {}),
+    );
+  }
+
+  if (data.type === "SKIP_WAITING") {
     self.skipWaiting();
   }
   // ISP-135/ISP-134: the SW can never hold a Serial port or NDEFReader, so

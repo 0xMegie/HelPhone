@@ -1,4 +1,20 @@
 import { Component, type ReactNode } from "react";
+import { reportClientError } from "../lib/telemetry";
+import { emergencyEmit } from "../lib/heapForensics";
+
+/**
+ * UI bug vs memory exhaustion (#793). OOM surfaces as RangeError
+ * ("Array buffer allocation failed", "Invalid array length", "Maximum call
+ * stack") or engine "out of memory" messages; those get the preallocated,
+ * hint-free forensic census instead of a full report that would allocate more.
+ */
+export function isLikelyOom(error: unknown): boolean {
+  const msg = String((error as Error)?.message ?? error).toLowerCase();
+  return (
+    (error instanceof RangeError && /allocation|array length|buffer|call stack/.test(msg)) ||
+    /out of memory|oom|allocation failed/.test(msg)
+  );
+}
 
 interface Props {
   children: ReactNode;
@@ -21,7 +37,12 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error("[ErrorBoundary] Component error caught:", error, errorInfo);
+    if (isLikelyOom(error)) {
+      emergencyEmit();
+      return;
+    }
+    const traceId = reportClientError(error, errorInfo.componentStack || undefined);
+    console.error("[ErrorBoundary] Component error caught:", { error, traceId });
   }
 
   handleReload = () => {

@@ -1,3 +1,16 @@
+import { installWorkerHooks } from "./workerSupervision.js";
+import {
+  installWorkerLockdown,
+  validateMessage,
+  zkWorkerInboundSchema,
+  zkWorkerOutboundSchema,
+} from "../lib/workerSandbox.ts";
+
+// Worker sandbox, layer 2: the bootstrap blob already ran this before this
+// module was imported. Running it again keeps the lockdown in place when the
+// worker is launched through the same-origin fallback path.
+installWorkerLockdown();
+
 let _noir = null;
 let _backend = null;
 let _Noir = null;
@@ -31,6 +44,42 @@ const BB_LOG_PATTERNS = [
   },
 ];
 
+
+// ── WASM Linear Memory Pool (performance hardening: 512MB cap, buffer recycling) ──
+const MAX_MEMORY_BYTES = 512 * 1024 * 1024;
+const BUCKET_SIZES = [4 * 1024, 16 * 1024, 64 * 1024, 256 * 1024, 1 * 1024 * 1024, 4 * 1024 * 1024, 16 * 1024 * 1024];
+function bucketFor(size) { for (const b of BUCKET_SIZES) if (size <= b) return b; return Math.ceil(size / (64 * 1024)) * 64 * 1024; }
+class WorkerMemoryPool {
+  constructor() {
+    this.pools = new Map();
+    for (const b of BUCKET_SIZES) this.pools.set(b, []);
+    this.active = new Set();
+    this.totalAllocated = 0;
+  }
+  allocate(size) {
+    const bucket = bucketFor(size);
+    if (this.totalAllocated + bucket > MAX_MEMORY_BYTES) throw new Error('Worker WASM memory cap 512MB exceeded');
+    let buf = this.pools.get(bucket)?.pop();
+    if (buf) { /* reuse */ } else { buf = new ArrayBuffer(bucket); }
+    this.active.add(buf);
+    this.totalAllocated += bucket;
+    return buf;
+  }
+  release(bufOrView) {
+    if (!bufOrView) return;
+    const ab = bufOrView.buffer || bufOrView;
+    if (!this.active.has(ab)) return;
+    this.active.delete(ab);
+    this.totalAllocated -= ab.byteLength;
+    try { new Uint8Array(ab).fill(0); } catch {}
+    const bucket = ab.byteLength;
+    if (!this.pools.has(bucket)) this.pools.set(bucket, []);
+    this.pools.get(bucket).push(ab);
+  }
+  stats() { return { totalAllocated: this.totalAllocated, pooled: [...this.pools.values()].reduce((a, b) => a + b.length, 0), active: this.active.size }; }
+}
+const memPool = new WorkerMemoryPool();
+
 function createBarretenbergLogger(onLog) {
   const seen = new Set();
   return (message) => {
@@ -44,6 +93,7 @@ function createBarretenbergLogger(onLog) {
 }
 
 function getThreadCount() {
+  if (!self.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") return 1;
   const available =
     typeof navigator !== "undefined" ? navigator.hardwareConcurrency : 4;
   return Math.max(1, Math.min(available, 8));
@@ -236,44 +286,103 @@ function isProverReady() {
   );
 }
 
-self.onmessage = async (event) => {
-  const { id, action, payload } = event.data;
+/**
+ * postMessage through the outbound schema: a payload that does not match the
+ * protocol never leaves the worker (defence in depth alongside the parent's
+ * own validation of worker output).
+ */
+function postToMain(message, transfer) {
+  const parsed = validateMessage(zkWorkerOutboundSchema, message);
+  if (!parsed.ok) {
+    console.warn(`[zk-worker] dropped outbound message: ${parsed.error}`);
+    return;
+  }
+  if (transfer) self.postMessage(parsed.data, transfer);
+  else self.postMessage(parsed.data);
+}
 
+// Error/heartbeat parity for null-origin workers (#793).
+installWorkerHooks(self, "zk-worker");
+self.onmessage = async (event) => {
+  // Worker sandbox, layer 3: reject anything that is not a known request
+  // before it can touch prover state.
+  const request = validateMessage(zkWorkerInboundSchema, event.data || {});
+  if (!request.ok) {
+    console.warn(`[zk-worker] dropped inbound message: ${request.error}`);
+    return;
+  }
+  const data = request.data;
+  // Support both legacy {type: 'prove'} and {action: 'prove'} protocols plus upstream actions
+  const isProve = data.type === 'prove' || data.action === 'prove';
+  if (isProve) {
+    const id = data.id;
+    const inputs = data.inputs || data.payload?.inputs;
+    const progress = (msg) => postToMain({ type: 'progress', id, action: 'log', message: msg });
+    let witnessBuf = null;
+    let proofBuf = null;
+    try {
+      const onLog = progress;
+      await warmProver(onLog);
+      witnessBuf = memPool.allocate(256 * 1024);
+      proofBuf = memPool.allocate(4 * 1024 * 1024);
+      progress('Executing witness');
+      // Ensure init
+      if (!_noir || !_backend) await init(onLog);
+      const artifact = await getCircuitArtifact();
+      // Re-use init if needed (already warmed)
+      const profileStart = performance.now();
+      const heapStart = performance.memory?.usedJSHeapSize ?? 0;
+      const { witness, returnValue } = await _noir.execute(inputs);
+      progress('Generating proof');
+      const { proof } = await _backend.generateProof(witness);
+      const proofBytes = proof instanceof Uint8Array ? proof : new Uint8Array(proof);
+      const profiling = { provingMs: performance.now() - profileStart, heapDeltaBytes: Math.max(0, (performance.memory?.usedJSHeapSize ?? heapStart) - heapStart), memStats: memPool.stats() };
+      postToMain({ type: 'done', id, action: 'proveComplete', proof: proofBytes, publicInputs: returnValue, profiling }, [proofBytes.buffer]);
+    } catch (error) {
+      postToMain({ type: 'error', id: data.id, action: 'error', error: error.message || String(error) });
+    } finally {
+      if (witnessBuf) memPool.release(witnessBuf);
+      if (proofBuf) memPool.release(proofBuf);
+    }
+    return;
+  }
+
+  const { id, action, payload } = data;
   try {
     switch (action) {
       case "warmProver": {
         const onLog = (msg) => {
-          self.postMessage({ id, action: "log", message: msg });
+          postToMain({ id, action: "log", message: msg });
         };
         await warmProver(onLog);
-        self.postMessage({ id, action: "warmProverComplete", success: true });
+        postToMain({ id, action: "warmProverComplete", success: true });
         break;
       }
 
       case "isProverReady": {
         const ready = isProverReady();
-        self.postMessage({ id, action: "isProverReadyResult", ready });
+        postToMain({ id, action: "isProverReadyResult", ready });
         break;
       }
 
       case "initHumanity": {
         const onLog = (msg) => {
-          self.postMessage({ id, action: "log", message: msg });
+          postToMain({ id, action: "log", message: msg });
         };
         await initHumanity(onLog);
-        self.postMessage({ id, action: "initHumanityComplete", success: true });
+        postToMain({ id, action: "initHumanityComplete", success: true });
         break;
       }
 
       default:
-        self.postMessage({
+        postToMain({
           id,
           action: "error",
           error: `Unknown action: ${action}`,
         });
     }
   } catch (error) {
-    self.postMessage({
+    postToMain({
       id,
       action: "error",
       error: error.message || String(error),

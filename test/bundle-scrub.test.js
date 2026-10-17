@@ -22,7 +22,9 @@ const PII_FIXTURE = {
 afterAll(() => {
   try {
     fs.rmSync(TMP, { recursive: true, force: true });
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
 });
 
 describe("PII scrubbing (ISP-130)", () => {

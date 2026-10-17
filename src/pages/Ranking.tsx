@@ -3,7 +3,8 @@ import { getRanking } from "../lib/contract";
 import type { RankingEntry } from "../types/index";
 import MainLayout from "../components/layout/MainLayout";
 import Badge from "../components/shared/Badge";
-import "./Ranking.css";
+import styles from "./Ranking.module.css";
+import { cx } from "../styles/cssModules";
 
 const PERIODS = Object.freeze(["This Week", "This Month", "All Time"]);
 
@@ -33,24 +34,24 @@ export default function Ranking() {
 
   return (
     <MainLayout navbar="solid" footer={false}>
-      <div className="hp-ranking-content">
+      <div className={styles["hp-ranking-content"]}>
         {/* Header */}
-        <div className="hp-ranking-header">
-          <div className="hp-ranking-label">HELPHONE NETWORK</div>
-          <h1 className="hp-ranking-title">Community Responders</h1>
-          <p className="hp-ranking-subtitle">
+        <div className={styles["hp-ranking-header"]}>
+          <div className={styles["hp-ranking-label"]}>HELPHONE NETWORK</div>
+          <h1 className={styles["hp-ranking-title"]}>Community Responders</h1>
+          <p className={styles["hp-ranking-subtitle"]}>
             The people who show up when it matters.
           </p>
         </div>
 
         {/* Period tabs */}
-        <div className="hp-ranking-tabs">
+        <div className={styles["hp-ranking-tabs"]}>
           {Array.isArray(PERIODS) &&
             PERIODS.map((p) => (
               <button
                 key={p}
                 onClick={() => setPeriod(p)}
-                className={`hp-ranking-tab ${period === p ? "hp-ranking-tab--active" : ""}`}
+                className={cx(styles["hp-ranking-tab"], period === p && styles["hp-ranking-tab--active"])}
               >
                 {p}
               </button>
@@ -59,8 +60,8 @@ export default function Ranking() {
 
         {/* Table */}
         {loading ? (
-          <div className="hp-ranking-card">
-            <div className="hp-ranking-card-header">
+          <div className={styles["hp-ranking-card"]}>
+            <div className={styles["hp-ranking-card-header"]}>
               <span>#</span>
               <span>RESPONDER</span>
               <span style={{ textAlign: "center" }}>ARRIVALS</span>
@@ -78,8 +79,8 @@ export default function Ranking() {
             </p>
           </div>
         ) : rows.length === 0 ? (
-          <div className="hp-ranking-card">
-            <div className="hp-ranking-card-header">
+          <div className={styles["hp-ranking-card"]}>
+            <div className={styles["hp-ranking-card-header"]}>
               <span>#</span>
               <span>RESPONDER</span>
               <span style={{ textAlign: "center" }}>ARRIVALS</span>
@@ -96,9 +97,9 @@ export default function Ranking() {
             </p>
           </div>
         ) : (
-          <div className="hp-ranking-card">
+          <div className={styles["hp-ranking-card"]}>
             {/* Header row */}
-            <div className="hp-ranking-card-header">
+            <div className={styles["hp-ranking-card-header"]}>
               <span>#</span>
               <span>RESPONDER</span>
               <span style={{ textAlign: "center" }}>ARRIVALS</span>
@@ -107,11 +108,11 @@ export default function Ranking() {
             {rows.map((row, i) => (
               <div
                 key={row.responder}
-                className={`hp-ranking-row ${i % 2 === 1 ? "hp-ranking-row--alt" : ""}`}
+                className={cx(styles["hp-ranking-row"], i % 2 === 1 && styles["hp-ranking-row--alt"])}
               >
                 {/* Rank */}
                 <span
-                  className="hp-ranking-rank"
+                  className={styles["hp-ranking-rank"]}
                   style={{
                     color:
                       i < MEDALS.length
@@ -127,7 +128,7 @@ export default function Ranking() {
                   style={{ display: "flex", alignItems: "center", gap: "10px" }}
                 >
                   <div
-                    className="hp-ranking-avatar"
+                    className={styles["hp-ranking-avatar"]}
                     style={{
                       background:
                         i < 3 ? "var(--color-teal)" : "var(--color-cream)",
@@ -136,7 +137,7 @@ export default function Ranking() {
                   >
                     {row.responder[7]?.toUpperCase() || "?"}
                   </div>
-                  <span className="hp-ranking-address">
+                  <span className={styles["hp-ranking-address"]}>
                     {row.responder.slice(0, 8)}…{row.responder.slice(-4)}
                   </span>
                 </div>
@@ -150,7 +151,7 @@ export default function Ranking() {
           </div>
         )}
 
-        <p className="hp-ranking-footnote">
+        <p className={styles["hp-ranking-footnote"]}>
           On-chain leaderboard · {rows.length} responders
         </p>
       </div>

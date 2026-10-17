@@ -23,14 +23,18 @@ function load() {
       seqCounter = Math.max(seqCounter, v.seq || 0);
       return v;
     }
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
   return { seq: 0, items: [] };
 }
 
 function save(state) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {}
+  } catch {
+    // best-effort — surface failures are non-fatal here
+  }
 }
 
 function nextSeq(state) {
