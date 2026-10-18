@@ -213,3 +213,30 @@ and `helphone_flag_time_to_effect_seconds`. Propagation p50/p95 per cohort
 (foreground, background, intermittent, offline) still has to be measured in
 the mixed-cohort Playwright drill. Until that is done, assume offline devices
 adopt a kill only on reconnect, and rely on server enforcement.
+
+---
+
+## Map-Poison & Compromised Tile CDN Incident Runbook (ISP-092)
+
+### 1. Threat & Detection
+A compromised Mapbox CDN or adversarial proxy serving corrupted, manipulated, or opaque vector tiles threatens field responder routes and victim rescue coordinates.
+- **Detection Triggers**:
+  - `TILE_ANOMALY` events logged via `wsClient.ts`: opaque responses (status 0), non-protobuf MIME types (`text/html`, `application/json`), or oversized tiles (>1MB).
+  - Anomaly threshold: ≥5 tile anomalies within 60s triggers immediate containment alert.
+
+### 2. Immediate Containment (Drill Steps)
+1. **Emit Upstream Tile Revocation**:
+   - Edge proxy or backend CDN config injects `X-Tile-Revoke: true` header on all tile requests.
+   - Alternatively, publish `TILE_REVOCATION` message across active WebSocket channels.
+2. **Execute In-App Emergency Purge**:
+   - Send `PURGE_TILES` postMessage to Service Worker:
+     ```javascript
+     navigator.serviceWorker.controller.postMessage({ type: "PURGE_TILES" });
+     ```
+   - Verifies all `tiles-v*` caches are deleted across all open tabs within <5s without purging precached app shell (`helphone-v1`) or offline ZK keys.
+3. **Bump Tile Cache Generation**:
+   - Update `TILES_CACHE_VERSION = "v2"` in `src/service-worker.js` and `vite.config.ts`.
+   - On SW activation, old version caches (`tiles-v1`) are automatically evicted.
+4. **Field Fallback**:
+   - When CDN upstream is untrusted, switch `CommunityMap.jsx` to offline SVG fallback mode until new tileset hashes are attested.
+

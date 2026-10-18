@@ -111,6 +111,18 @@ export function sensitiveKeys(env = RAW_ENV) {
   );
 }
 
+// ISP-094: Phase-based environment scoping (install must be strictly secret-free)
+export function enforcePhase(phase = process.env.HELPHONE_BUILD_PHASE || "install") {
+  if (phase === "install") {
+    const leaked = sensitiveKeys();
+    if (leaked.length > 0) {
+      throw new Error(
+        `[env-firewall] SECURITY: Install phase must be secret-free. Detected ${leaked.length} sensitive keys: ${leaked.join(", ")}`
+      );
+    }
+  }
+}
+
 function installEnvFirewall() {
   if (process.env.__HELPHONE_ENV_FIREWALL__) return; // idempotent
   const realEnv = process.env;
