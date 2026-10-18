@@ -93,6 +93,14 @@ Privacy here is real, not theater: see [`anonymizeLocation`](src/pages/Help.jsx)
 
 ---
 
+### 11. Zero-Downtime Deploy, Observability Quota, Secrets Rotation & Anti-Spoofing Spikes (#758–#761)
+- **Zero-Downtime Deploy Choreography (#758)**: Unified graceful deployment and shutdown protocol (`server/lib/zeroDowntimeDeploy.js`) coordinating migration advisory fencing, dual-readiness `/readyz` gating (<50 ledgers lag), graceful WS draining with `resumeSeq` tokens (blackout p95 <3s), and single-holder indexer advisory locking with atomic batch checkpoints. See [`docs/spikes/758-zero-downtime-deploy-report.md`](docs/spikes/758-zero-downtime-deploy-report.md). Tests: `test/zero-downtime-deploy-spike.test.js`.
+- **OpenTelemetry Sampling & Quota Protection (#759)**: Observability quota guardian (`server/lib/otelSamplingEngine.js`) combining Pareto drop rules (stripping ≥70% noise spans), 5% head sampling with 100% tail capture for errors and emergency flows, salted PII/cardinality masking (<500 series), and an OTLP 429 circuit breaker. See [`docs/spikes/759-otel-sampling-quota-report.md`](docs/spikes/759-otel-sampling-quota-report.md). Tests: `test/otel-sampling-spike.test.js`.
+- **Zero-Downtime Secrets Rotation Without Restart (#760)**: Hot-reloading secrets manager (`server/lib/secretRotationManager.js`) implementing atomic pre-validation, dual-trust signature verification windows (Gen N and Gen N-1 grace), and blue-green connection pool rebirth for PostgreSQL and Redis. See [`docs/spikes/760-secrets-rotation-report.md`](docs/spikes/760-secrets-rotation-report.md). Tests: `test/secret-rotation-spike.test.js`.
+- **Anti-Spoofing & ZK Credential Replay Defense (#761)**: Security verification engine (`server/lib/antiSpoofVerification.js`) binding proofs cryptographically to incident and epoch, impossible-travel teleportation filter (>300 m/s), multi-device sybil nullifier deduplication, and a progressive disclosure ladder gating exact citizen coordinates in `Help.jsx`. See [`docs/spikes/761-anti-spoof-geofence-report.md`](docs/spikes/761-anti-spoof-geofence-report.md). Tests: `test/anti-spoof-verification-spike.test.js`.
+
+---
+
 ## Quick Start
 
 ```bash
