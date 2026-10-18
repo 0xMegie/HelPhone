@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { breakdown, buildEnvelope, emitEnvelope, sample, SIGNAL_KIND } from "../lib/heapForensics.ts";
 import { currentFlagSnapshot, evaluateKillSwitch, KILL_SWITCH_POLICIES, onFlagSnapshot } from "../lib/featureFlags.ts";
+import { detectAnomalies, groupAlerts, sampleSpans } from "../lib/anomalyDetector.ts";
 
 const card = { border: "1px solid #C9BCA4", borderRadius: "14px", padding: "14px 16px", background: "#F2E8D6", marginTop: "16px" };
 const muted = { color: "#6b6457", fontSize: "12px" };
@@ -87,6 +88,76 @@ export function FlagsPanel() {
           })}
         </tbody>
       </table>
+    </section>
+  );
+}
+
+/** Anomaly precision panel (#773): groups burst alerts and correlates deploy/flag markers. */
+export function AnomalyPanel() {
+  const [alerts, setAlerts] = useState([]);
+  const [kept, setKept] = useState(0);
+  const [total, setTotal] = useState(0);
+
+  const run = () => {
+    const now = Date.now();
+    // Synthetic burst: many short ok spans + one stalled retry chain.
+    const spans = [];
+    for (let i = 0; i < 40; i++) {
+      spans.push({
+        traceId: `healthy-${i}`,
+        spanId: `s-${i}`,
+        name: "dispatch",
+        durationMs: 120 + (i % 5) * 10,
+        status: "ok",
+        at: now + i * 100,
+      });
+    }
+    const stallTrace = "stall-1";
+    for (let i = 0; i < 6; i++) {
+      spans.push({
+        traceId: stallTrace,
+        spanId: `stall-${i}`,
+        name: "syncManager.retry",
+        durationMs: 700,
+        status: "ok",
+        at: now + 5000 + i * 200,
+        parentSpanId: i === 0 ? undefined : `stall-${i - 1}`,
+      });
+    }
+    const markers = [
+      { kind: "deploy", at: now - 60_000, label: "deploy:lab" },
+      { kind: "flag_flip", at: now + 1000, label: "flag:anomalyDetectorV2" },
+    ];
+    const sampled = sampleSpans(spans, { headSampleRatio: 0.1, causalKeepRatio: 0.95 });
+    const raw = detectAnomalies(sampled, markers);
+    const grouped = groupAlerts(raw);
+    setKept(sampled.length);
+    setTotal(spans.length);
+    setAlerts(grouped);
+  };
+
+  return (
+    <section style={card} aria-labelledby="anomaly-h">
+      <h2 id="anomaly-h" style={{ margin: "0 0 8px", fontSize: "16px" }}>Anomaly detector</h2>
+      <p style={{ ...muted, margin: "0 0 10px" }}>
+        Burst-aware paging with deploy/flag correlation. One burst → one banner (#773).
+      </p>
+      <button type="button" style={button} onClick={run}>Replay burst scenario</button>
+      {total > 0 && (
+        <p style={{ ...muted, margin: "8px 0 0" }}>
+          Kept {kept}/{total} spans (causal chain preserved for stalls).
+        </p>
+      )}
+      {alerts.length > 0 && (
+        <ul data-testid="anomaly-alerts" style={{ margin: "10px 0 0", paddingInlineStart: "18px", fontSize: "12px" }}>
+          {alerts.map((a) => (
+            <li key={a.id}>
+              <strong>{a.severity}</strong> — {a.reason}
+              {a.correlatedMarkers.length > 0 ? ` · markers: ${a.correlatedMarkers.join(", ")}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

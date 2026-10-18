@@ -50,6 +50,41 @@
       "targets": {
         "environments": ["production", "staging", "development"]
       }
+    },
+    "slice_nav": {
+      "enabled": true,
+      "rolloutPercentage": 100,
+      "targets": {
+        "environments": ["production", "staging", "development"]
+      }
+    },
+    "slice_hero": {
+      "enabled": true,
+      "rolloutPercentage": 100,
+      "targets": {
+        "environments": ["production", "staging", "development"]
+      }
+    },
+    "multilingualSearchV2": {
+      "enabled": true,
+      "rolloutPercentage": 100,
+      "targets": {
+        "environments": ["production", "staging", "development"]
+      }
+    },
+    "reputationGatedRanking": {
+      "enabled": true,
+      "rolloutPercentage": 100,
+      "targets": {
+        "environments": ["production", "staging", "development"]
+      }
+    },
+    "anomalyDetectorV2": {
+      "enabled": true,
+      "rolloutPercentage": 100,
+      "targets": {
+        "environments": ["production", "staging", "development"]
+      }
     }
   }
 }
