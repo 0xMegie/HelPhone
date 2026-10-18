@@ -85,6 +85,14 @@ Privacy here is real, not theater: see [`anonymizeLocation`](src/pages/Help.jsx)
 
 ---
 
+### 10. Disaster Resilience, Accessibility & Privacy Hardening Spikes (#766–#769)
+- **Right-to-be-Forgotten & Data-Purge Spike (#766)**: Multi-table partition-pruned deletion engine (`server/lib/dataPurge.js`), Redis/WebSocket buffer eviction, CRDT anti-resurrection barrier protocol for 48h offline stragglers, append-only ledger crypto-redaction, and signed erasure receipts. See [`docs/spikes/766-right-to-be-forgotten-purge-report.md`](docs/spikes/766-right-to-be-forgotten-purge-report.md). Tests: `test/data-purge-spike.test.js`.
+- **WCAG 2.2 AA & Screen-Reader Hardening Spike (#767)**: Accessible rendezvous and incident keyboard list alternative (`src/components/MapAccessibleAlternative.jsx`), modal focus traps with invoker restoration (`src/lib/focusTrap.js`), and reduced-motion vestibular safety controls (`src/lib/a11yMotion.js`). See [`docs/spikes/767-wcag-screen-reader-hardening-report.md`](docs/spikes/767-wcag-screen-reader-hardening-report.md). Tests: `test/a11y-wcag-hardening.test.jsx`.
+- **12-Hour Shift Battery & Thermal Management (#768)**: Hardware-aware power budgeting (`src/lib/powerManager.js`) with geofence-adaptive GPS sampling tiers (1Hz on-scene, 0.05Hz en-route, 0.016Hz stationary), Doze-aware presence state machine (`ACTIVE`, `DOZE_SUSPECTED`, `OFFLINE`), thermal-aware WASM proving with epoch-cache reuse, transient audio wakelock budgeting (capped to 5s), and mass-wake reconnection jitter. See [`docs/spikes/768-battery-thermal-field-responder-report.md`](docs/spikes/768-battery-thermal-field-responder-report.md). Tests: `test/power-battery-thermal-spike.test.js`.
+- **Correlated Multi-Fault Chaos Engineering & Bulkhead Design (#769)**: Quad-fault chaos harness (`server/lib/chaosEngine.js`) executing the `RED_WEDDING` scenario (concurrent Redis crash, PostgreSQL partition detach, Stellar Horizon 429 rate limit storm, and CPU quota throttle), featuring connection pool lanes (`CRITICAL` vs `BACKGROUND`), staged admission load-shedding, `txBatcher` queue cap and spill-to-disk buffer, verification priority queues, and single-command rollback. See [`docs/spikes/769-multi-fault-chaos-bulkhead-report.md`](docs/spikes/769-multi-fault-chaos-bulkhead-report.md). Tests: `test/chaos-multi-fault-spike.test.js`.
+
+---
+
 ## Quick Start
 
 ```bash
