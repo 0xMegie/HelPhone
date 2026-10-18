@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BENCH_SCENARIOS, runTelemetryBench } from "../utils/telemetryBench.js";
-import { DivergencePanel, FlagsPanel, ForensicsPanel } from "./TelemetryLabPanels.jsx";
+import { AnomalyPanel, DivergencePanel, FlagsPanel, ForensicsPanel } from "./TelemetryLabPanels.jsx";
 
 const WASM_URL = new URL("../wasm/telemetry_reader.wasm", import.meta.url).href;
 const FRAME_SIZES = [100, 1000, 10000];
@@ -155,6 +155,7 @@ export default function TelemetryLab() {
           </div>
         )}
 
+        <AnomalyPanel />
         <ForensicsPanel />
         <FlagsPanel />
         <DivergencePanel />

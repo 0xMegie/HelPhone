@@ -198,3 +198,23 @@ export async function runTelemetryBench({
     crossOriginIsolated: globalThis.crossOriginIsolated === true,
   };
 }
+
+/**
+ * Burst-realistic load profile for anomaly threshold tuning (#773).
+ * Steady-state benches understate emergency traffic; this returns a
+ * sequence of rates that spike then settle, matching field dispatch bursts.
+ */
+export function burstLoadProfile({
+  baselineRate = 200,
+  peakRate = 5000,
+  seconds = 30,
+} = {}) {
+  const points = [];
+  for (let t = 0; t < seconds; t++) {
+    let rate = baselineRate;
+    if (t >= 8 && t < 14) rate = peakRate; // six-second flood
+    else if (t >= 14 && t < 18) rate = Math.round(peakRate * 0.35);
+    points.push({ t, rate });
+  }
+  return Object.freeze(points);
+}

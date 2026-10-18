@@ -19,6 +19,7 @@
  */
 
 import Fuse from "fuse.js";
+import { normalizeSearchQuery } from "./searchNormalize";
 
 export interface CityRecord {
   id: string;
@@ -90,31 +91,31 @@ const EMBEDDED_CITIES: CityRecord[] = [
   ["Istanbul", "TR", "Turkey", 41.0082, 28.9784],
   ["Moscow", "RU", "Russia", 55.7558, 37.6173, ["Saint Petersburg"]],
   ["Kyiv", "UA", "Ukraine", 50.4501, 30.5234],
-  ["Cairo", "EG", "Egypt", 30.0444, 31.2357],
-  ["Casablanca", "MA", "Morocco", 33.5731, -7.5898],
+  ["Cairo", "EG", "Egypt", 30.0444, 31.2357, ["القاهرة", "القاهره", "Al-Qahirah"]],
+  ["Casablanca", "MA", "Morocco", 33.5731, -7.5898, ["الدار البيضاء"]],
   ["Lagos", "NG", "Nigeria", 6.5244, 3.3792],
   ["Nairobi", "KE", "Kenya", -1.2921, 36.8219],
   ["Johannesburg", "ZA", "South Africa", -26.2041, 28.0473],
   ["Cape Town", "ZA", "South Africa", -33.9249, 18.4241],
   ["Accra", "GH", "Ghana", 5.6037, -0.187],
   ["Addis Ababa", "ET", "Ethiopia", 9.0054, 38.7636],
-  ["Khartoum", "SD", "Sudan", 15.5007, 32.5599],
-  ["Tehran", "IR", "Iran", 35.6892, 51.389],
-  ["Baghdad", "IQ", "Iraq", 33.3152, 44.3661],
-  ["Dubai", "AE", "United Arab Emirates", 25.2048, 55.2708],
-  ["Riyadh", "SA", "Saudi Arabia", 24.7136, 46.6753, ["Jeddah"]],
+  ["Khartoum", "SD", "Sudan", 15.5007, 32.5599, ["الخرطوم"]],
+  ["Tehran", "IR", "Iran", 35.6892, 51.389, ["تهران", "طهران"]],
+  ["Baghdad", "IQ", "Iraq", 33.3152, 44.3661, ["بغداد"]],
+  ["Dubai", "AE", "United Arab Emirates", 25.2048, 55.2708, ["دبي", "Dubayy"]],
+  ["Riyadh", "SA", "Saudi Arabia", 24.7136, 46.6753, ["Jeddah", "الرياض"]],
   ["Tel Aviv", "IL", "Israel", 32.0853, 34.7818],
-  ["Jerusalem", "IL", "Israel", 31.7683, 35.2137],
+  ["Jerusalem", "IL", "Israel", 31.7683, 35.2137, ["القدس"]],
   ["New Delhi", "IN", "India", 28.6139, 77.209, ["Delhi", "Mumbai", "Bangalore", "Chennai", "Kolkata", "Pune"]],
   ["Mumbai", "IN", "India", 19.076, 72.8777, ["Bombay"]],
   ["Bangalore", "IN", "India", 12.9716, 77.5946],
   ["Chennai", "IN", "India", 13.0827, 80.2707],
   ["Kolkata", "IN", "India", 22.5726, 88.3639],
-  ["Beijing", "CN", "China", 39.9042, 116.4074],
-  ["Shanghai", "CN", "China", 31.2304, 121.4737],
-  ["Tokyo", "JP", "Japan", 35.6762, 139.6503, ["Osaka", "Kyoto", "Yokohama"]],
-  ["Osaka", "JP", "Japan", 34.6937, 135.5023],
-  ["Seoul", "KR", "South Korea", 37.5665, 126.978, ["Busan"]],
+  ["Beijing", "CN", "China", 39.9042, 116.4074, ["北京", "北平"]],
+  ["Shanghai", "CN", "China", 31.2304, 121.4737, ["上海"]],
+  ["Tokyo", "JP", "Japan", 35.6762, 139.6503, ["Osaka", "Kyoto", "Yokohama", "東京", "东京"]],
+  ["Osaka", "JP", "Japan", 34.6937, 135.5023, ["大阪"]],
+  ["Seoul", "KR", "South Korea", 37.5665, 126.978, ["Busan", "서울", "ソウル"]],
   ["Bangkok", "TH", "Thailand", 13.7563, 100.5018, ["Chiang Mai"]],
   ["Singapore", "SG", "Singapore", 1.3521, 103.8198],
   ["Kuala Lumpur", "MY", "Malaysia", 3.139, 101.6869],
@@ -168,14 +169,26 @@ function slugify(name: string): string {
 
 let embeddedIndex: Fuse<CityRecord> | null = null;
 
+function fuseOptions() {
+  return {
+    keys: ["name", "country", "cc", "alt"],
+    threshold: 0.35,
+    shouldSort: true,
+    ignoreLocation: true,
+    useExtendedSearch: false,
+    getFn: (obj: CityRecord, path: string | string[]) => {
+      const key = Array.isArray(path) ? path.join(".") : path;
+      const raw = (obj as unknown as Record<string, unknown>)[key];
+      if (typeof raw === "string") return normalizeSearchQuery(raw);
+      if (Array.isArray(raw)) return raw.map((v) => (typeof v === "string" ? normalizeSearchQuery(v) : v));
+      return raw as string;
+    },
+  };
+}
+
 function getEmbeddedIndex(): Fuse<CityRecord> {
   if (!embeddedIndex) {
-    embeddedIndex = new Fuse(EMBEDDED_CITIES, {
-      keys: ["name", "country", "cc", "alt"],
-      threshold: 0.35,
-      shouldSort: true,
-      ignoreLocation: true,
-    });
+    embeddedIndex = new Fuse(EMBEDDED_CITIES, fuseOptions());
   }
   return embeddedIndex;
 }
@@ -187,9 +200,21 @@ export function searchCitiesSync(
 ): GeocoderSuggestion[] {
   const { limit = 6 } = options;
   if (!query || !query.trim()) return [];
-  const q = query.trim();
+  const q = normalizeSearchQuery(query);
   const hits = getEmbeddedIndex().search(q, { limit });
+  // Prefer exact normalised name / alt hits at the front for CJK/Arabic.
+  hits.sort((a, b) => {
+    const aExact = exactNormalizedHit(a.item, q) ? 0 : 1;
+    const bExact = exactNormalizedHit(b.item, q) ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+    return (a.score ?? 1) - (b.score ?? 1);
+  });
   return hits.map((result) => toSuggestion(result.item, result.score));
+}
+
+function exactNormalizedHit(city: CityRecord, q: string): boolean {
+  if (normalizeSearchQuery(city.name) === q) return true;
+  return (city.alt ?? []).some((alias) => normalizeSearchQuery(alias) === q || normalizeSearchQuery(alias).startsWith(q));
 }
 
 // ── Async dataset-aware search (full cities.json + IndexedDB cache) ─
@@ -256,13 +281,7 @@ export async function loadCityDataset(): Promise<CityRecord[]> {
 export async function getFuseIndex(): Promise<Fuse<CityRecord>> {
   if (!fullIndexPromise) {
     fullIndexPromise = loadCityDataset().then(
-      (cities) =>
-        new Fuse(cities, {
-          keys: ["name", "country", "cc", "alt"],
-          threshold: 0.35,
-          shouldSort: true,
-          ignoreLocation: true,
-        }),
+      (cities) => new Fuse(cities, fuseOptions()),
     );
     fullIndexPromise.catch(() => {
       fullIndexPromise = null; // allow retry on next call
@@ -278,13 +297,87 @@ export async function searchCities(
 ): Promise<GeocoderSuggestion[]> {
   const { limit = 6 } = options;
   if (!query || !query.trim()) return [];
-  const q = query.trim();
+  const q = normalizeSearchQuery(query);
   if (isOffline() && !fullIndexPromise) {
     return searchCitiesSync(q, { limit });
   }
+  // Prefer worker build when available so the main thread stays under 100ms (#771).
+  if (typeof Worker !== "undefined" && typeof window !== "undefined") {
+    try {
+      const workerHits = await searchCitiesViaWorker(q, limit);
+      if (workerHits) return workerHits;
+    } catch {
+      // Fall through to main-thread Fuse.
+    }
+  }
   const index = await getFuseIndex();
   const hits = index.search(q, { limit });
+  hits.sort((a, b) => {
+    const aExact = exactNormalizedHit(a.item, q) ? 0 : 1;
+    const bExact = exactNormalizedHit(b.item, q) ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+    return (a.score ?? 1) - (b.score ?? 1);
+  });
   return hits.map((result) => toSuggestion(result.item, result.score));
+}
+
+let searchWorker: Worker | null = null;
+let searchWorkerReady: Promise<void> | null = null;
+
+function getSearchWorker(): Worker | null {
+  if (typeof Worker === "undefined") return null;
+  if (searchWorker) return searchWorker;
+  try {
+    searchWorker = new Worker(new URL("../workers/searchWorker.js", import.meta.url), {
+      type: "module",
+    });
+    return searchWorker;
+  } catch {
+    return null;
+  }
+}
+
+async function searchCitiesViaWorker(
+  query: string,
+  limit: number,
+): Promise<GeocoderSuggestion[] | null> {
+  const worker = getSearchWorker();
+  if (!worker) return null;
+  if (!searchWorkerReady) {
+    const cities = await loadCityDataset();
+    searchWorkerReady = new Promise((resolve, reject) => {
+      const onReady = (event: MessageEvent) => {
+        if (event.data?.type === "ready") {
+          worker.removeEventListener("message", onReady);
+          resolve();
+        } else if (event.data?.type === "error") {
+          worker.removeEventListener("message", onReady);
+          reject(new Error(event.data.message || "search worker failed"));
+        }
+      };
+      worker.addEventListener("message", onReady);
+      worker.postMessage({ type: "build", cities });
+    });
+  }
+  await searchWorkerReady;
+  return new Promise((resolve) => {
+    const id = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.id !== id) return;
+      worker.removeEventListener("message", onMessage);
+      if (event.data.type !== "results") {
+        resolve(null);
+        return;
+      }
+      resolve(
+        (event.data.hits as CityRecord[]).map((city: CityRecord, i: number) =>
+          toSuggestion(city, event.data.scores?.[i]),
+        ),
+      );
+    };
+    worker.addEventListener("message", onMessage);
+    worker.postMessage({ type: "search", id, query, limit });
+  });
 }
 
 /** Drop every in-memory cache (embedded fuse index + full dataset) so tests
@@ -293,6 +386,15 @@ export function clearGeocoderCache(): void {
   embeddedIndex = null;
   fullIndexPromise = null;
   cachedDataset = null;
+  searchWorkerReady = null;
+  if (searchWorker) {
+    try {
+      searchWorker.terminate();
+    } catch {
+      /* ignore */
+    }
+    searchWorker = null;
+  }
 }
 
 function toSuggestion(city: CityRecord, score?: number): GeocoderSuggestion {
