@@ -31,21 +31,32 @@ import { createFederationRouter } from "./routes/federation.js";
 import { createDispatchRouters } from "./routes/dispatch.js";
 import { syncRouter } from "./routes/sync.js";
 import historyRouter from "./routes/history.js";
+import { getRedis, isRedisConfigured } from "./lib/redis.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Rate limiter ─────────────────────────────────────────────────────────────
-// In-memory sliding-window rate limiter. Tracks request counts per IP within
-// a rolling window and returns 429 when the limit is exceeded.
+// Rate limiter: counts requests per IP within a fixed window and returns 429
+// when the limit is exceeded. With REDIS_URL set the counter lives in Redis so
+// every Render replica shares one budget; without it, each process keeps its
+// own in-memory counter (single-instance dev and tests).
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 60);
+
+// Atomic increment + expiry: the TTL is set only when the key is first created,
+// so a crash between the two commands cannot leave a counter that never expires.
+const FIXED_WINDOW_LUA = `local c = redis.call('INCR', KEYS[1])
+if c == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+return c`;
 
 export function createRateLimiter({
   windowMs = RATE_LIMIT_WINDOW_MS,
   max = RATE_LIMIT_MAX,
   skip = isWhitelisted,
+  keyPrefix = "ratelimit:general",
 } = {}) {
   const hits = new Map();
+  const redisPending = isRedisConfigured() ? getRedis() : null;
 
   function cleanup(now) {
     for (const [key, entry] of hits) {
@@ -53,7 +64,37 @@ export function createRateLimiter({
     }
   }
 
+  function rejectIfOver(res, count, next) {
+    res.setHeader("X-RateLimit-Limit", max);
+    res.setHeader("X-RateLimit-Remaining", Math.max(0, max - count));
+    if (count > max) {
+      return res.status(429).json({
+        success: false,
+        error: "Too many requests. Please try again later.",
+      });
+    }
+    next();
+  }
+
+  // Shared budget across replicas. Fails open on Redis errors so emergency
+  // traffic keeps flowing during an outage; every failure is logged for alerting.
+  async function sharedMiddleware(req, res, next) {
+    if (skip(req)) return next();
+    const ip = req.ip || req.socket?.remoteAddress || "unknown";
+    let count;
+    try {
+      const redis = await redisPending;
+      if (!redis) throw new Error("Redis client unavailable");
+      count = Number(await redis.eval(FIXED_WINDOW_LUA, 1, `${keyPrefix}:${ip}`, windowMs));
+    } catch (err) {
+      console.error(`[rate-limit] Redis unavailable, failing open: ${err.message}`);
+      return next();
+    }
+    return rejectIfOver(res, count, next);
+  }
+
   function middleware(req, res, next) {
+    if (redisPending) return sharedMiddleware(req, res, next);
     // Whitelisted emergency-service callers bypass throttling entirely.
     if (skip(req)) return next();
     const ip = req.ip || req.socket?.remoteAddress || "unknown";
