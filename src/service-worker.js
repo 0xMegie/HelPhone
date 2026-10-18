@@ -11,6 +11,16 @@ const manifest = self.__WB_MANIFEST || [];
 precacheAndRoute(manifest);
 
 const CACHE_NAME = "helphone-v1";
+const TILES_CACHE_VERSION = "v1";
+const TILES_CACHE_NAME = `tiles-${TILES_CACHE_VERSION}`;
+const ALLOWED_TILE_MIMES = [
+  "application/x-protobuf",
+  "application/vnd.mapbox-vector-tile",
+  "application/octet-stream",
+  "image/png",
+  "image/webp",
+  "image/jpeg",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -25,7 +35,11 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME && cacheName !== "helphone-zk-assets-v1") {
+          if (
+            cacheName !== CACHE_NAME &&
+            cacheName !== "helphone-zk-assets-v1" &&
+            cacheName !== TILES_CACHE_NAME
+          ) {
             return caches.delete(cacheName);
           }
         }),
@@ -83,25 +97,71 @@ self.addEventListener("fetch", (event) => {
   if (request.method === "GET") {
     if (url.hostname.includes("mapbox.com")) {
       event.respondWith(
-        caches.match(request).then((response) => {
-          return (
-            response ||
-            fetch(request)
-              .then((response) => {
-                if (!response || response.status !== 200) {
-                  return response;
-                }
-                const responseClone = response.clone();
-                caches.open(CACHE_NAME).then((cache) => {
-                  cache.put(request, responseClone);
-                });
-                return response;
-              })
-              .catch(() => {
-                return caches.match(request);
-              })
-          );
-        }),
+        (async () => {
+          const cache = await caches.open(TILES_CACHE_NAME);
+          const cachedResponse = await cache.match(request);
+
+          const revalidatePromise = (async () => {
+            try {
+              const networkResponse = await fetch(request);
+              // Strict integrity verification:
+              // 1. Must be HTTP 200 (reject status 0 opaque responses and errors)
+              if (!networkResponse || networkResponse.status !== 200) {
+                return networkResponse;
+              }
+
+              // 2. Upstream revocation check
+              const isRevoked = networkResponse.headers.get("x-tile-revoke");
+              if (isRevoked === "true" || isRevoked === "1") {
+                await cache.delete(request);
+                const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+                clients.forEach((c) => c.postMessage({ type: "TILE_REVOKED", url: request.url }));
+                return networkResponse;
+              }
+
+              // 3. MIME type check
+              const contentType = (networkResponse.headers.get("content-type") || "")
+                .split(";")[0]
+                .trim()
+                .toLowerCase();
+              const isAllowedMime = ALLOWED_TILE_MIMES.some(
+                (m) => contentType === m || contentType.includes("protobuf") || contentType.includes("vector-tile")
+              );
+
+              // 4. Size check: reject oversized > 1MB
+              const contentLength = parseInt(networkResponse.headers.get("content-length") || "0", 10);
+              const isOversized = contentLength > 1024 * 1024;
+
+              if (isAllowedMime && !isOversized) {
+                await cache.put(request, networkResponse.clone());
+              } else {
+                const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+                clients.forEach((c) =>
+                  c.postMessage({
+                    type: "TILE_ANOMALY",
+                    payload: {
+                      url: request.url,
+                      contentType,
+                      contentLength,
+                      reason: isOversized ? "OVERSIZED" : "MIME_MISMATCH",
+                    },
+                  })
+                );
+              }
+              return networkResponse;
+            } catch (err) {
+              if (cachedResponse) return cachedResponse;
+              throw err;
+            }
+          })();
+
+          if (cachedResponse) {
+            event.waitUntil(revalidatePromise.catch(() => {}));
+            return cachedResponse;
+          }
+
+          return revalidatePromise;
+        })()
       );
       return;
     }
@@ -184,6 +244,32 @@ self.addEventListener("message", (event) => {
   if (data.type === "SKIP_WAITING") {
     self.skipWaiting();
   }
+
+  // ISP-092: Emergency purge for poisoned Mapbox vector tiles without wiping app-shell
+  if (data.type === "PURGE_TILES") {
+    event.waitUntil(
+      caches
+        .keys()
+        .then((cacheNames) => {
+          const tileCaches = cacheNames.filter(
+            (name) =>
+              name.startsWith("tiles-") ||
+              name.includes("mapbox-tiles") ||
+              name.includes("mapbox-api")
+          );
+          return Promise.all(tileCaches.map((name) => caches.delete(name)));
+        })
+        .then(() => {
+          return self.clients.matchAll({ type: "window", includeUncontrolled: true });
+        })
+        .then((clients) => {
+          for (const client of clients) {
+            client.postMessage({ type: "TILES_PURGED", timestamp: Date.now() });
+          }
+        })
+    );
+  }
+
   // ISP-135/ISP-134: the SW can never hold a Serial port or NDEFReader, so
   // it only relays field intents (radio RX, NFC results, SOS) between
   // clients. TX always happens in a foreground page.

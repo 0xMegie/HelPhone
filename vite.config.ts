@@ -98,29 +98,29 @@ export default defineConfig(({ mode }) => ({
           },
           {
             urlPattern: /^https:\/\/api\.mapbox\.com\/.*/i,
-            handler: "CacheFirst",
+            handler: "StaleWhileRevalidate",
             options: {
-              cacheName: "mapbox-api-cache",
+              cacheName: "mapbox-api-v1",
               expiration: {
                 maxEntries: 100,
-                maxAgeSeconds: 60 * 60 * 24 * 30,
+                maxAgeSeconds: 60 * 60 * 24 * 7,
               },
               cacheableResponse: {
-                statuses: [0, 200],
+                statuses: [200],
               },
             },
           },
           {
-            urlPattern: /^https:\/\/tiles\.mapbox\.com\/.*/i,
-            handler: "CacheFirst",
+            urlPattern: /^https:\/\/(?:api|tiles|[a-d]\.tiles)\.mapbox\.com\/v4\/.*/i,
+            handler: "StaleWhileRevalidate",
             options: {
-              cacheName: "mapbox-tiles-cache",
+              cacheName: "tiles-v1",
               expiration: {
                 maxEntries: 500,
-                maxAgeSeconds: 60 * 60 * 24 * 30,
+                maxAgeSeconds: 60 * 60 * 24 * 7,
               },
               cacheableResponse: {
-                statuses: [0, 200],
+                statuses: [200],
               },
             },
           },

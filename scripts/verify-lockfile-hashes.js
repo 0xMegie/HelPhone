@@ -65,6 +65,39 @@ export async function main(args = process.argv.slice(2)) {
   const npm = npmEntries(lock)
   const cargo = cargoEntries(cargoText)
   const failures = validateLockfileChecksums(npm, cargo)
+
+  // ISP-093: Verify exact build-tag pinning for @sqlite.org/sqlite-wasm
+  const sqliteEntry = lock.packages?.['node_modules/@sqlite.org/sqlite-wasm']
+  if (sqliteEntry && sqliteEntry.version && /^[\^~]/.test(sqliteEntry.version)) {
+    failures.push({
+      ecosystem: 'npm',
+      name: '@sqlite.org/sqlite-wasm',
+      version: sqliteEntry.version,
+      reason: 'build-tag bypass: version must be pinned exactly without ^ or ~',
+    })
+  }
+
+  // ISP-093: Cross-check server/package-lock.json for drift if present
+  try {
+    const serverLock = JSON.parse(await readFile('server/package-lock.json', 'utf8'))
+    const rootPackages = lock.packages || {}
+    const serverPackages = serverLock.packages || {}
+    for (const [pathKey, sVal] of Object.entries(serverPackages)) {
+      if (!pathKey.startsWith('node_modules/') || !sVal?.version) continue
+      const rVal = rootPackages[pathKey]
+      if (rVal && (rVal.version !== sVal.version || (rVal.integrity && sVal.integrity && rVal.integrity !== sVal.integrity))) {
+        failures.push({
+          ecosystem: 'npm',
+          name: pathKey.replace('node_modules/', ''),
+          version: `${rVal.version} vs ${sVal.version}`,
+          reason: 'cross-lockfile drift between root and server',
+        })
+      }
+    }
+  } catch {
+    // server/package-lock.json optional / not present
+  }
+
   if (!offline) failures.push(...await verifyEntries([...npm, ...cargo]))
   if (failures.length) {
     console.error('SECURITY: lockfile integrity verification failed')

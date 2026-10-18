@@ -41,6 +41,18 @@ export function auditSource(source, file = 'inline.ts') {
         while (scope && !ts.isFunctionLike(scope)) scope = scope.parent
         if (!scope || !textContains(scope, ast, /auth|authoriz|verify|sign/i)) findings.push(finding(file, node, ast, 'unauthenticated-contract-call', 'Contract submission lacks an authorization check in its function scope'))
       }
+      // ISP-094: Taint-aware detection for network sinks and base64 sinks
+      if (/^(?:WebSocket|XMLHttpRequest|dgram\.createSocket|dns\.lookup|dns\.resolve)$/.test(callee)) {
+        findings.push(finding(file, node, ast, 'sensitive-network-sink', `Sensitive network sink ${callee} detected in AI-touched file; requires manual review`))
+      }
+    }
+    // ISP-094: Detect split-string and obfuscated fetch calls (e.g. "fe" + "tch")
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const leftText = node.left.getText(ast).replace(/['"]/g, '')
+      const rightText = node.right.getText(ast).replace(/['"]/g, '')
+      if ((leftText + rightText).toLowerCase() === 'fetch' || (leftText + rightText).toLowerCase() === 'child_process') {
+        findings.push(finding(file, node, ast, 'obfuscated-sink', `Obfuscated network sink "${leftText}" + "${rightText}" detected; flagged for review`))
+      }
     }
     ts.forEachChild(node, visit)
   }

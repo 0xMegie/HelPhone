@@ -264,3 +264,31 @@ build pipeline runs: dependency installation and `npm run build`.
   reason in the same PR. If it is not explainable, treat the dependency as
   compromised: do not publish the artifact, pin the previous version, rotate
   any secrets present in the build environment, and report upstream.
+
+---
+
+## Egress Anomaly Detection & Key-Rotation Incident Runbook (ISP-094)
+
+### 1. Trigger Conditions
+- CI/CD build egress transcript records unexpected DNS query (`*.exfil.invalid` or high-entropy subdomain).
+- Query-string beacon (`?canary=...` or param entropy > 4.0) observed on allowed or unallowed hosts.
+- Unauthorized outbound SYN/TCP connection during `install` or `build` phase.
+- Leaked Stellar seed or Mapbox token detected during artifact scan.
+
+### 2. Immediate Containment & Key Rotation Procedure
+1. **Immediate Release Freeze**:
+   - Abort current pipeline run; reject release artifact signing.
+   - Quarantine candidate deployment in Render / GitHub Actions.
+2. **Stellar Key Compromise Protocol**:
+   - Rotate master operator and hot wallet signing keys immediately:
+     - Generate new Ed25519 seed keypair via offline HSM / secure vault.
+     - Fund new public key on Soroban network.
+     - Transfer admin privileges via `set_admin` contract invocation with multi-sig approval.
+     - Revoke compromised signing public key from contract maintainer set.
+3. **Mapbox & Infrastructure Token Revocation**:
+   - Revoke compromised Mapbox secret token (`sk.*`) in Mapbox Developer Console.
+   - Issue replacement token with strict scope limited to HelPhone vector tileset URLs.
+   - Update Render and GitHub secret vaults.
+4. **Attestation & Post-Mortem**:
+   - Produce audited egress transcript hash and compare against clean build baseline.
+   - File CVE advisory and incident bundle per `docs/disaster-recovery.md`.

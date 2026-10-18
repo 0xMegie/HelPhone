@@ -13,6 +13,9 @@ These four time-boxed spikes each produce an ADR (in [`docs/adr/`](../adr/README
 | #759 OTel Sampling & Quota Protection | — | [759 report](759-otel-sampling-quota-report.md) | `server/lib/otelSamplingEngine.js` | — | — |
 | #760 Zero-Downtime Secrets Rotation | — | [760 report](760-secrets-rotation-report.md) | `server/lib/secretRotationManager.js` | — | — |
 | #761 Anti-Spoofing & ZK Credential Replay Defense | — | [761 report](761-anti-spoof-geofence-report.md) | `server/lib/antiSpoofVerification.js` | — | — |
+| #762 PWA Cache Poisoning & Map Tile Integrity | — | [762 report](762-pwa-cache-poisoning-tile-report.md) | `server/lib/tileCacheIntegrity.js`, `src/service-worker.js` | — | — |
+| #763 Dependency Confusion & Build-Tag Protection | — | [763 report](763-dependency-confusion-sqlite-wasm-report.md) | `scripts/security/dependencyConfusionGuard.js` | — | — |
+| #764 Build-Egress Exfiltration Defense | — | [764 report](764-build-egress-exfiltration-report.md) | `scripts/security/buildEgressGuard.js`, `scripts/audit-ai-code.js` | — | — |
 | #766 Right-to-be-Forgotten Data Purge | — | [766 report](766-right-to-be-forgotten-purge-report.md) | `server/lib/dataPurge.js` | — | — |
 | #767 WCAG 2.2 AA Screen-Reader Hardening | — | [767 report](767-wcag-screen-reader-hardening-report.md) | `src/components/MapAccessibleAlternative.jsx`, `src/lib/focusTrap.js`, `src/lib/a11yMotion.js` | — | — |
 | #768 12-Hour Shift Battery & Thermal | — | [768 report](768-battery-thermal-field-responder-report.md) | `src/lib/powerManager.js` | — | — |

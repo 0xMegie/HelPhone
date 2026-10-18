@@ -19,7 +19,40 @@ export default function CommunityMap({ overlays, onRenderStats }) {
   // remount a fresh one in main-thread mode if the worker dies.
   const [mountKey, setMountKey] = useState(0);
   const [forceMain, setForceMain] = useState(false);
+  const [mapStatus, setMapStatus] = useState("operational"); // 'operational' | 'updating' | 'anomaly'
+  const [statusMessage, setStatusMessage] = useState(null);
   const hasOverlay = overlays !== undefined;
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
+    const handleSwMessage = (event) => {
+      const data = event.data || {};
+      if (data.type === "TILE_REVOKED") {
+        setMapStatus("updating");
+        setStatusMessage("Upstream map tiles revoked. Refreshing secure cache...");
+      } else if (data.type === "TILES_PURGED") {
+        setMapStatus("updating");
+        setStatusMessage("Tile cache purged. Fetching fresh verified tiles...");
+        setTimeout(() => {
+          setMapStatus("operational");
+          setStatusMessage(null);
+        }, 3000);
+      } else if (data.type === "TILE_ANOMALY") {
+        setMapStatus("anomaly");
+        setStatusMessage(`Tile integrity anomaly detected (${data.payload?.reason || "rejected"}).`);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", handleSwMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", handleSwMessage);
+  }, []);
+
+  const handlePurgeTiles = () => {
+    if (typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {
+      setMapStatus("updating");
+      setStatusMessage("Purging map tile cache...");
+      navigator.serviceWorker.controller.postMessage({ type: "PURGE_TILES" });
+    }
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -271,6 +304,46 @@ export default function CommunityMap({ overlays, onRenderStats }) {
           pointerEvents: "none",
         }}
       />
+    )}
+    {statusMessage && (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{
+          position: "absolute",
+          top: 10,
+          left: 10,
+          right: 10,
+          background: mapStatus === "anomaly" ? "rgba(220, 53, 69, 0.9)" : "rgba(35, 75, 78, 0.9)",
+          color: "#ECE0CC",
+          padding: "6px 12px",
+          borderRadius: 4,
+          fontSize: 12,
+          fontFamily: "monospace",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          zIndex: 10,
+        }}
+      >
+        <span>{statusMessage}</span>
+        <button
+          type="button"
+          onClick={handlePurgeTiles}
+          style={{
+            background: "#FF7A6B",
+            border: "none",
+            color: "#234B4E",
+            padding: "2px 8px",
+            borderRadius: 3,
+            cursor: "pointer",
+            fontWeight: "bold",
+            fontSize: 11,
+          }}
+        >
+          Purge & Refresh
+        </button>
+      </div>
     )}
     </div>
   );

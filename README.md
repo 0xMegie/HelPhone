@@ -101,6 +101,13 @@ Privacy here is real, not theater: see [`anonymizeLocation`](src/pages/Help.jsx)
 
 ---
 
+### 12. PWA Cache Poisoning, Dependency Confusion & Build-Egress Defense Spikes (#762–#764)
+- **PWA Cache Poisoning & Map Tile Integrity (#762)**: Integrity and anti-poisoning manager (`server/lib/tileCacheIntegrity.js`) removing opaque status 0 footguns (`statuses: [200]`), enforcing Stale-While-Revalidate with 7-day TTL, version-scoped cache lifecycle (`tiles-v1`), protobuf MIME & size bounds, and emergency in-app tile purge protocol (`PURGE_TILES`) with client telemetry. See [`docs/spikes/762-pwa-cache-poisoning-tile-report.md`](docs/spikes/762-pwa-cache-poisoning-tile-report.md). Tests: `test/pwa-cache-poisoning-spike.test.js`.
+- **Dependency Confusion & Build-Tag Protection (#763)**: Pre-resolution dependency validator (`scripts/security/dependencyConfusionGuard.js`) enforcing exact build-tag pinning for `@sqlite.org/sqlite-wasm` without caret (`3.53.4-build1`), pre-resolution typosquatting and scope confusion gates, cross-lockfile consistency checks (`verify-lockfile-hashes.js`), and pre-compilation WASM source input verification (`verify-wasm-build.sh`). See [`docs/spikes/763-dependency-confusion-sqlite-wasm-report.md`](docs/spikes/763-dependency-confusion-sqlite-wasm-report.md). Tests: `test/dependency-confusion-spike.test.js`.
+- **Build-Egress Exfiltration Defense (#764)**: Multi-phase pipeline confinement guardian (`scripts/security/buildEgressGuard.js`) enforcing secret-free install phase environment scoping, AST-based obfuscated sink detection (`"fe" + "tch"`) in `scripts/audit-ai-code.js`, artifact secret scanning (Stellar seeds, Mapbox tokens, Shannon entropy), protocol-aware egress anomaly detection (DNS tunneling & query-string beacons), and cryptographic release transcript attestation. See [`docs/spikes/764-build-egress-exfiltration-report.md`](docs/spikes/764-build-egress-exfiltration-report.md). Tests: `test/build-egress-exfiltration-spike.test.js`.
+
+---
+
 ## Quick Start
 
 ```bash
