@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act, cleanup } from '@testing-library/react';
 
@@ -12,8 +13,11 @@ import CommunityMap from '../src/components/CommunityMap.jsx';
 const overlays = [{ id: 'a', x: 10, y: 20, kind: 'pending' }];
 
 describe('CommunityMap canvas overlay', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     cleanup();
+    await act(async () => {
+      await Promise.resolve();
+    });
     vi.clearAllMocks();
   });
 
@@ -66,9 +70,48 @@ describe('CommunityMap canvas overlay', () => {
     expect(screen.getByTestId('map-overlay-canvas')).not.toBe(firstCanvas);
   });
 
-  it('destroys the renderer on unmount', () => {
+  it('retries on a fresh main-thread canvas when worker initialization throws', () => {
+    const error = new DOMException('Canvas was already transferred', 'InvalidStateError');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    createOverlayRenderer.mockImplementationOnce(() => {
+      throw error;
+    });
+
+    render(<CommunityMap overlays={overlays} />);
+
+    expect(createOverlayRenderer).toHaveBeenCalledTimes(2);
+    expect(createOverlayRenderer.mock.calls[1][1].forceMainThread).toBe(true);
+    expect(screen.getByTestId('map-overlay-canvas')).toBeTruthy();
+    expect(consoleError).toHaveBeenCalledWith(
+      '[CommunityMap] Offscreen worker setup failed; retrying on the main thread.',
+      error,
+    );
+    consoleError.mockRestore();
+  });
+
+  it('does not transfer the same canvas twice during StrictMode effect replay', async () => {
+    const { unmount } = render(
+      <StrictMode>
+        <CommunityMap overlays={overlays} />
+      </StrictMode>,
+    );
+
+    expect(createOverlayRenderer).toHaveBeenCalledTimes(1);
+    expect(renderer.destroy).not.toHaveBeenCalled();
+
+    unmount();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(renderer.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroys the renderer on unmount', async () => {
     const { unmount } = render(<CommunityMap overlays={overlays} />);
     unmount();
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(renderer.destroy).toHaveBeenCalledTimes(1);
   });
 

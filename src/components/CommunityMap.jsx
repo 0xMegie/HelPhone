@@ -13,6 +13,8 @@ const MAP_HEIGHT = 540;
 export default function CommunityMap({ overlays, onRenderStats }) {
   const canvasRef = useRef(null);
   const rendererRef = useRef(null);
+  const rendererCanvasRef = useRef(null);
+  const rendererGenerationRef = useRef(0);
   const statsRef = useRef(onRenderStats);
   statsRef.current = onRenderStats;
   // A canvas whose control was transferred can't be reused; bump the key to
@@ -57,21 +59,43 @@ export default function CommunityMap({ overlays, onRenderStats }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!hasOverlay || !canvas) return undefined;
-    const renderer = createOverlayRenderer(canvas, {
-      width: MAP_WIDTH,
-      height: MAP_HEIGHT,
-      dpr: Math.min(window.devicePixelRatio || 1, 2),
-      forceMainThread: forceMain,
-      onStats: (s) => statsRef.current?.(s),
-      onError: () => {
+    let renderer = rendererRef.current;
+    if (rendererCanvasRef.current !== canvas) {
+      if (renderer) renderer.destroy();
+      rendererRef.current = null;
+      rendererCanvasRef.current = null;
+      try {
+        renderer = createOverlayRenderer(canvas, {
+          width: MAP_WIDTH,
+          height: MAP_HEIGHT,
+          dpr: Math.min(window.devicePixelRatio || 1, 2),
+          forceMainThread: forceMain,
+          onStats: (s) => statsRef.current?.(s),
+          onError: () => {
+            setForceMain(true);
+            setMountKey((k) => k + 1);
+          },
+        });
+      } catch (error) {
+        if (forceMain) throw error;
+        console.error("[CommunityMap] Offscreen worker setup failed; retrying on the main thread.", error);
         setForceMain(true);
         setMountKey((k) => k + 1);
-      },
-    });
-    rendererRef.current = renderer;
+        return undefined;
+      }
+      rendererRef.current = renderer;
+      rendererCanvasRef.current = canvas;
+    }
+    const generation = ++rendererGenerationRef.current;
     return () => {
-      renderer.destroy();
-      rendererRef.current = null;
+      queueMicrotask(() => {
+        if (rendererGenerationRef.current !== generation) return;
+        if (rendererRef.current === renderer) {
+          renderer.destroy();
+          rendererRef.current = null;
+          rendererCanvasRef.current = null;
+        }
+      });
     };
   }, [hasOverlay, mountKey, forceMain]);
 
