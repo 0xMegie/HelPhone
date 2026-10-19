@@ -125,8 +125,8 @@ export function createCorsMiddleware(opts: CorsOptions = {}) {
 
     // Allowed origin – set CORS headers
     res.setHeader('Access-Control-Allow-Origin', origin)
-    // Credentials are not needed for ZK prover (no cookies), keep false to avoid extra complexity
-    // If you need credentials, set Access-Control-Allow-Credentials: true and mirror origin
+    // #753: Allow credentials for Stellar wallet popups with postMessage
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
     res.setHeader('Access-Control-Allow-Methods', methods.join(', '))
     res.setHeader('Access-Control-Allow-Headers', headers.join(', '))
     // Only set Max-Age on preflight responses (per spec, but also harmless on simple requests)

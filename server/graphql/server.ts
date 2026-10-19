@@ -1,8 +1,8 @@
 /**
- * server/graphql/server.ts — Apollo Server wiring for Express (#528)
+ * server/graphql/server.ts — Apollo Server 5 wiring for Express 5 (#751)
  */
 import { ApolloServer } from '@apollo/server'
-import { expressMiddleware } from '@as-integrations/express4'
+import { expressMiddleware } from '@as-integrations/express'
 import { ApolloServerPluginLandingPageDisabled } from '@apollo/server/plugin/disabled'
 import { GraphQLError, Kind, type ValidationRule } from 'graphql'
 import type { NextFunction, Request, RequestHandler, Response } from 'express'
