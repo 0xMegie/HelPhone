@@ -41,6 +41,8 @@ CommunityMap.jsx ── createOverlayRenderer(canvas) ─┬─ worker mode:    
 
 Both modes call the same `drawOverlayFrame()`, so the output is identical. Main-thread mode is used when `Worker`, `OffscreenCanvas` or `transferControlToOffscreen` is missing. If the worker fails after control was transferred, the canvas cannot be reused, so `CommunityMap` remounts a fresh canvas and forces main-thread mode.
 
+React StrictMode replays effect setup and cleanup in development. Because a transferred canvas cannot be transferred again, `CommunityMap` retains the renderer across that synchronous replay and defers teardown by one microtask; a real unmount still destroys it, while a replacement canvas gets a new renderer.
+
 Usage: pass `overlays` (an array of `{ id, x, y, kind }` in map viewBox units, `1140 x 540`) and optionally `onRenderStats`. With no `overlays` prop, no canvas is rendered and behaviour is unchanged.
 
 ### Frame rate
