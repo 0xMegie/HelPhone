@@ -195,9 +195,10 @@ export class LwwElementSet<T = unknown> {
     return removed
   }
 
-  snapshot() {
+  snapshot(journalHighwater = 0) {
     return {
       clock: { ...this.clock },
+      journal_highwater: journalHighwater,
       operations: [...this.operations.values()],
       entries: [...this.entries.values()].sort((a, b) => a.key.localeCompare(b.key)),
     }

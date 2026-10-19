@@ -113,3 +113,31 @@ export class ContractEventStreamer {
 export function createAuditStreamer(options) {
   return new ContractEventStreamer(options);
 }
+
+export function createJoinReceipt({ snapshotId, highwater, pageCount, hash, clientVector = {} }) {
+  return {
+    receiptId: `rcpt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    snapshotId,
+    highwater,
+    pageCount,
+    hash,
+    clientVector,
+    createdAt: new Date().toISOString(),
+    verified: false,
+  };
+}
+
+export function verifyJoinCompleteness(receipt, serverExpected) {
+  if (!receipt || !serverExpected) return { complete: false, reason: 'missing_receipt_or_expected' };
+  if (receipt.snapshotId !== serverExpected.snapshotId && serverExpected.snapshotId) {
+    return { complete: false, reason: 'snapshot_mismatch' };
+  }
+  if (receipt.highwater < serverExpected.highwater) {
+    return { complete: false, reason: 'highwater_behind', deviceHighwater: receipt.highwater, serverHighwater: serverExpected.highwater };
+  }
+  if (serverExpected.hash && receipt.hash !== serverExpected.hash) {
+    return { complete: false, reason: 'hash_mismatch' };
+  }
+  receipt.verified = true;
+  return { complete: true, receiptId: receipt.receiptId };
+}

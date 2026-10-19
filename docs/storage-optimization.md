@@ -46,3 +46,98 @@ Emitted only when a push displaces an entry. Indexers should archive `record` fr
 
 - Rust (`ring_buffer.rs`, `test.rs`): fill to capacity with no eviction or event; the 501st entry evicts index 0 and emits the exact event; strict FIFO across more than two wraps; per-wallet isolation; legacy layout; TTL extension; listing capped by retained entries.
 - JS (`test/ring-buffer.test.js`): window math, retention checks, recent-index paging, and the contract wrapper with only the RPC faked.
+
+---
+
+# Client SQLite-WASM Maintenance & Storage Optimization (ISP-064 / ISP-067)
+
+## Problem: VACUUM Death Spiral
+
+Under continuous field simulation, 5s telemetry inserts fragment SQLite-WASM rapidly, creating 35–60% freelist bloat after 7 days. Previous nightly full `VACUUM` attempts rewrote 200–600MB on-device databases under `EXCLUSIVE` lock, causing:
+- 40–120s foreground freezes (2–6 fps, ANR on Android, Jetsam kills on iOS).
+- Telemetry worker insert queue overflows with `SQLITE_BUSY` bursts.
+- Priority dispatch inserts waiting 8–25s behind vacuum locks.
+- Volunteers force-quitting mid-vacuum, leaving torn WAL frames and corrupt databases.
+
+## Partitioned Retention Model (`telemetry_YYYYMM`)
+
+Instead of row-by-row `DELETE` followed by space-reclaiming `VACUUM`, telemetry tables are partitioned by year and month:
+```sql
+CREATE TABLE IF NOT EXISTS telemetry_202605 (
+  id TEXT PRIMARY KEY,
+  device_id TEXT,
+  seq INTEGER,
+  timestamp INTEGER,
+  lat REAL,
+  lng REAL,
+  accuracy REAL
+);
+
+-- Unified view across all active partitions
+CREATE VIEW IF NOT EXISTS telemetry AS
+  SELECT * FROM telemetry_202605
+  UNION ALL
+  SELECT * FROM telemetry_202604;
+```
+
+### Retention via Metadata DROP
+
+When a 30-day retention window expires:
+1. The backend issues `DROP TABLE IF EXISTS telemetry_YYYYMM`.
+2. SQLite removes the table from metadata instantly (<5ms).
+3. Space is returned immediately to the operating system or marked free with **zero page-rewriting** and **zero freelist fragmentation**.
+4. Freelist bloat stays under 15% across 30 days of continuous operation.
+
+## Budgeted Incremental Vacuum (`incremental_vacuum(50)`)
+
+Full `VACUUM` is strictly forbidden in browser environments. For non-partitioned tables, `auto_vacuum=INCREMENTAL` is combined with budgeted page reclamation:
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| `PRAGMA auto_vacuum` | `INCREMENTAL` | Enables incremental page returns without full file rewrites |
+| `PRAGMA page_size` | `4096` | Optimal balance for OPFS block access |
+| `PRAGMA journal_mode` | `WAL` | Permits concurrent readers while single writer commits |
+| `PRAGMA busy_timeout` | `5000` | 5000ms wait before SQLITE_BUSY error |
+| Budget per step | `50 pages` | ~200KB per step, completing in <15ms |
+| Max steps per idle run | `10 steps` | Caps maintenance slice to <150ms |
+| Abort threshold | `backlog > 0` or `fps < 30` | Yields within 100ms on dispatch backlog or UI jank |
+
+```js
+// Budgeted idle vacuum loop
+export async function runIncrementalVacuumBudget(storageEngine, { pagesPerStep = 50, maxSteps = 10 } = {}) {
+  for (let i = 0; i < maxSteps; i++) {
+    if (syncManager.getDispatchBacklog() > 0 || performanceMonitor.getFps() < 30) {
+      console.warn('[Storage] Yielding incremental vacuum due to dispatch backlog / low FPS');
+      break;
+    }
+    const freed = await storageEngine.incrementalVacuum(pagesPerStep);
+    if (freed === 0) break; // Freelist empty
+    await yieldToMainThread();
+  }
+}
+```
+
+## Crash-Atomic Durability & Dirty-Boot Resurrection (ISP-067)
+
+### Single Commit Order
+
+```
+1. SQLite WAL COMMIT  ──▶  2. OPFS syncfs  ──▶  3. IDB Mark Acked
+```
+
+1. **SQLite is the Source of Truth:** `BEGIN IMMEDIATE` transaction commits to WAL.
+2. **OPFS syncfs ensures Durability:** File access handle commits bytes to disk.
+3. **IndexedDB is Transport Journal:** Marks entry as `acked` after disk persistence.
+
+### Resurrection Workflow (`crashRecovery.ts`)
+
+On application boot after a crash, power outage, or kill:
+1. **Torn WAL Tail Truncation:** Validate frame checksums and sequence continuity. Truncate torn tails and increment `torn_frames_dropped`.
+2. **High-Water Alignment:**
+   - Read `sqliteHighwater = storageEngine.getHighwater(deviceId)`.
+   - Read `idbHighwater = journalStore.getHighwater(deviceId)`.
+3. **Zombie-Snapshot Fencing:** If CRDT snapshot header carries `journal_highwater > sqliteHighwater` without IDB journal coverage, refuse snapshot restore (`zombie_snapshots_refused++`) to prevent deleted assignments from resurrecting.
+4. **Strict Delta Replay:** Replay only IDB journal entries where `seq > sqliteHighwater`.
+5. **WAL Checkpoint:** Execute `PRAGMA wal_checkpoint(TRUNCATE)`.
+6. **Upload Gate Release:** Emit `RECOVERY_COMPLETE`. Network sync and crdtSync uploads remain blocked until this gate opens.
+

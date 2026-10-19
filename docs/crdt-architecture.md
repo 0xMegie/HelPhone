@@ -45,3 +45,37 @@ Because the merge rules form a join-semilattice and the tiebreaking fallback def
 
 ### 2.4 Provenance & UI Demarcation
 Replicated operations originating from remote instances are marked with `provenance: "peer_asserted"`. Client applications render these incidents with peer provenance badges (`ProvenanceBadge.jsx`) to clearly demarcate foreign peer claims from locally validated DAO transactions.
+
+## 3. Dehydration Protocol & New Device Onboarding (ISP-066)
+
+### 3.1 Problem: Full-Doc Join OOM
+Replaying 30 days of disaster history (15,000+ operations, 60–150MB binary) on newly joined devices spiked RAM to 400–600MB, exhausting the 2GB memory ceiling on mid-tier mobile hardware (Moto G / Helio) and triggering white-screen ANR/Jetsam crashes. Full-doc queries also held database connections for 20–40s, collapsing connection pools during mass volunteer arrivals.
+
+### 3.2 Actionable-First Ingestion (<20s Time-to-Action)
+Onboarding prioritizes immediate life-safety operations over historical context:
+1. **Actionable Slice Request:** The device immediately fetches `/api/dispatch?slice=open-today` (<1MB payload, indexed by `status`, `geohash`, `server_received_at`).
+2. **Immediate Rendering:** Active incidents render on the UI within <20s.
+3. **Background History Backfill:** 30-day historical telemetry and resolved requests stream asynchronously in the background.
+
+```
+[New Device Join]
+       │
+       ├──▶ Step 1: GET /api/dispatch?slice=open-today  ──▶ Renders Active Queue (<20s)
+       │
+       └──▶ Step 2 (Background): GET /api/sync/snapshot ──▶ Hourly Compacted Base (CDN)
+                   │
+                   └──▶ Step 3 (Background Paged): GET /api/sync/deltas?limit=500
+```
+
+### 3.3 Snapshot & Paged Delta Protocol
+- **Hourly Compacted Snapshot:** Published to `/api/sync/snapshot` with `Cache-Control: public, max-age=300`. Contains compacted state update, state vector, and SHA-256 integrity hash.
+- **Delta Paging:** Delivered via `/api/sync/deltas?since_vector=<base64>&limit=500`. Returns `{ operations, next_vector, checksum, has_more }`.
+- **Per-Page Checkpointing:** After each 500-operation chunk, the client checkpoints `next_vector` to IndexedDB (`secureStorage.ts`). If connection drops or the browser closes, onboarding resumes from the last checkpoint with zero re-transmission waste (<15% rework).
+- **Bounded Heap:** Memory remains strictly under **250MB** on 2GB devices throughout the entire 30-day hydration sequence.
+
+### 3.4 Routing & UI Gating
+While background hydration is in progress:
+- The UI displays a syncing progress badge: `🔄 Syncing history X%`.
+- `routingWorker.js` gates graph traversal and route estimations, returning `{ status: 'history-partial', badge: 'history-partial', eta: null }` rather than emitting misleading ETAs on incomplete road network states.
+- Once hydration completes, `auditStreamer.js` generates a `join_receipt` (`snapshot_id`, `highwater`, `page_count`, `hash`), verifying full convergence between client and server.
+

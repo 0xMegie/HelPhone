@@ -115,6 +115,12 @@ export async function runMaintenance(deps: MaintenanceDeps = {}): Promise<Mainte
 
   running = true
   try {
+    const { getReplicationLagMs } = await import('./connection.js');
+    const lagMs = await getReplicationLagMs();
+    if (lagMs > 30_000) {
+      log('[db-maintenance] paused due to replication lag > 30s', { lagMs });
+      return { skipped: 'replication-lag' as any, tables: [] };
+    }
     const exec = async (fn: (query: QueryFn) => Promise<TableResult[]>): Promise<TableResult[]> =>
       deps.query ? fn(deps.query) : withClient((client) => fn((sql, params) => client.query(sql, params)))
 

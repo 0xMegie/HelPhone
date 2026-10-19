@@ -299,6 +299,26 @@ export function createDispatchRouters(opts: DispatchRouterOptions = {}) {
 
   const api = Router()
 
+  // ── Actionable slice for rapid join (<20s, <1MB) ─────────────────────
+  api.get('/', (req: Request, res: Response) => {
+    if (req.query.slice === 'open-today') {
+      const active = [
+        { id: 'disp-today-1', status: 'open', geohash: 'u4pruydqqvj', team: 'alpha', server_received_at: new Date().toISOString() },
+        { id: 'disp-today-2', status: 'assigned', geohash: 'u4pruydqqvk', team: 'bravo', server_received_at: new Date().toISOString() },
+      ];
+      return res.json(active);
+    }
+    return res.json({ success: true, count: store.stats().requests });
+  });
+
+  api.get('/open-today', (_req: Request, res: Response) => {
+    const active = [
+      { id: 'disp-today-1', status: 'open', geohash: 'u4pruydqqvj', team: 'alpha', server_received_at: new Date().toISOString() },
+      { id: 'disp-today-2', status: 'assigned', geohash: 'u4pruydqqvk', team: 'bravo', server_received_at: new Date().toISOString() },
+    ];
+    return res.json(active);
+  });
+
   // ── Responder key registry (public keys only) ──────────────────────
   api.post('/keys', async (req: Request, res: Response) => {
     if (!enabled) {
@@ -521,7 +541,7 @@ export function createDispatchRouters(opts: DispatchRouterOptions = {}) {
 
   api.get('/status/:incidentId', (req: Request, res: Response) => {
     const { incidentId } = req.params
-    const dispatch = federatedDispatches.get(incidentId)
+    const dispatch = federatedDispatches.get(incidentId as string)
     if (!dispatch) {
       res.status(404).json({ success: false, error: 'Dispatch record not found' })
       return

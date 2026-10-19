@@ -9,6 +9,9 @@ import { colors, motion, spacing } from './theme/tokens'
 
 function AppContent() {
   const [visibleElements, setVisibleElements] = useState<Set<number>>(new Set())
+  const [replicaLagMs, setReplicaLagMs] = useState<number>(0)
+  const [syncProgress, setSyncProgress] = useState<number | null>(null)
+  const [isRecovering, setIsRecovering] = useState<boolean>(false)
 
   const emergencyBroadcasterEnabled = useFeatureFlag('emergency_broadcaster')
   const sorobanBackupEnabled = useFeatureFlag('soroban_state_backup')
@@ -103,6 +106,52 @@ function AppContent() {
             {sorobanBackupEnabled && (
               <span className="hp-app-nav-status" style={{ fontSize: '0.8rem', color: colors.teal }}>
                 🛡️ State Backup Active
+              </span>
+            )}
+            {replicaLagMs > 10000 && (
+              <span
+                className="hp-stale-badge"
+                data-testid="stale-badge"
+                style={{
+                  fontSize: '0.8rem',
+                  color: colors.coral,
+                  background: 'rgba(255, 122, 107, 0.15)',
+                  padding: '0.2rem 0.5rem',
+                  borderRadius: '4px',
+                  fontWeight: 600,
+                }}
+              >
+                ⚠️ Stale ~{Math.round(replicaLagMs / 1000)}s
+              </span>
+            )}
+            {syncProgress !== null && (
+              <span
+                className="hp-sync-badge"
+                data-testid="sync-badge"
+                style={{
+                  fontSize: '0.8rem',
+                  color: colors.teal,
+                  background: 'rgba(35, 75, 78, 0.2)',
+                  padding: '0.2rem 0.5rem',
+                  borderRadius: '4px',
+                }}
+              >
+                🔄 Syncing history {syncProgress}%
+              </span>
+            )}
+            {isRecovering && (
+              <span
+                className="hp-recovery-badge hp-offline-indicator"
+                data-testid="recovery-badge"
+                style={{
+                  fontSize: '0.8rem',
+                  color: colors.purple,
+                  background: 'rgba(115, 87, 255, 0.2)',
+                  padding: '0.2rem 0.5rem',
+                  borderRadius: '4px',
+                }}
+              >
+                🛡️ Recovering...
               </span>
             )}
             <ProvenanceBadge />

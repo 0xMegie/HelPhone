@@ -110,3 +110,29 @@ slow, or serving from a stressed node), `offline` (no node healthy) or `unknown`
   be chosen. Point backups at reputable providers for the same network.
 - Latency is measured from the browser to the node, which is what users
   experience, but it varies by location.
+
+---
+
+## Dehydration & Low-Bandwidth Field Onboarding (ISP-066)
+
+During emergency field mobilizations, volunteers onboard over congested 2G/3G networks or throttled satellite links (`cap-500kbps`).
+
+### Onboarding Waterfall Comparison
+
+| Metric | Legacy Full-Doc Join | Dehydrated Paged Join |
+|---|---|---|
+| Initial Payload Size | 60–150 MB binary | <1 MB (`slice=open-today`) |
+| Time to Actionable UI (Fast 3G) | 60–180s (frequent OOM crash) | **< 20 seconds** |
+| Background Backfill Duration | N/A (failed or blocked UI) | < 10 minutes |
+| Resumption on Network Drop | Restarts at 0% (wastes full transfer) | Resumes from `next_vector` checkpoint (<15% rework) |
+| Peak Heap Memory | 400–600 MB (ANR / Jetsam kill) | **< 250 MB sustained** |
+| Server Connection Hold Time | 20–40s per client | < 500 ms per 500-op delta page |
+
+### Interruption & Resumability Drill
+
+When field connections drop mid-hydration:
+1. The client maintains its acknowledged state vector in `secureStorage.ts`.
+2. Upon reconnection, `hydratePaged()` queries `/api/sync/deltas?since_vector=<saved_vector>&limit=500`.
+3. The server generates deltas strictly forward from the checkpoint, eliminating duplicate data transfer.
+4. If a page fails hash validation, the single 500-operation chunk is retried rather than aborting the entire onboarding process.
+

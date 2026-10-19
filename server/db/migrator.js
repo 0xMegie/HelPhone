@@ -227,6 +227,15 @@ export async function runMigrations(options = {}) {
       return report;
     }
 
+    const { getReplicationLagMs } = await import('./connection.js');
+    const lagMs = await getReplicationLagMs();
+    if (lagMs > 15_000 && !options?.urgent) {
+      report.error = 'Replication lag exceeds 15s threshold (refusing non-urgent migrations)';
+      report.reason = 'replication-lag';
+      log(`[migrate] Refusing non-urgent migrations: replication lag is ${lagMs}ms (>15000ms threshold)`);
+      return report;
+    }
+
     const files = await readMigrationFiles(dir);
     if (files.length === 0) {
       report.reason = `no migrations found in ${dir}`;

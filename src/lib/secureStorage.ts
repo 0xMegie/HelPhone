@@ -82,3 +82,89 @@ export class SecureStorage {
     this.storage.removeItem(PREFIX + name);
   }
 }
+
+export interface JournalEntry {
+  deviceId: string;
+  seq: number;
+  op: any;
+  acked: boolean;
+  timestamp: number;
+}
+
+export class JournalStore {
+  private entries: JournalEntry[] = [];
+
+  constructor(private readonly storage?: Storage) {
+    this.load();
+  }
+
+  private load(): void {
+    try {
+      const raw = this.storage?.getItem('hp_idb_journal');
+      if (raw) this.entries = JSON.parse(raw);
+    } catch {}
+  }
+
+  private save(): void {
+    try {
+      this.storage?.setItem('hp_idb_journal', JSON.stringify(this.entries));
+    } catch {}
+  }
+
+  append(deviceId: string, seq: number, op: any): void {
+    this.entries.push({
+      deviceId,
+      seq,
+      op,
+      acked: false,
+      timestamp: Date.now(),
+    });
+    this.save();
+  }
+
+  markAcked(deviceId: string, seq: number): void {
+    for (const e of this.entries) {
+      if (e.deviceId === deviceId && e.seq <= seq) {
+        e.acked = true;
+      }
+    }
+    this.save();
+  }
+
+  getHighwater(deviceId?: string): number {
+    let max = 0;
+    for (const e of this.entries) {
+      if (deviceId && e.deviceId !== deviceId) continue;
+      if (e.seq > max) max = e.seq;
+    }
+    return max;
+  }
+
+  getUnackedEntries(aboveSeq = 0, deviceId?: string): JournalEntry[] {
+    return this.entries.filter((e) => {
+      if (deviceId && e.deviceId !== deviceId) return false;
+      return e.seq > aboveSeq && !e.acked;
+    });
+  }
+
+  getAllEntries(aboveSeq = 0, deviceId?: string): JournalEntry[] {
+    return this.entries.filter((e) => {
+      if (deviceId && e.deviceId !== deviceId) return false;
+      return e.seq > aboveSeq;
+    });
+  }
+
+  clear(): void {
+    this.entries = [];
+    this.save();
+  }
+}
+
+let journalSingleton: JournalStore | null = null;
+export function getJournalStore(storage?: Storage): JournalStore {
+  if (!journalSingleton) {
+    journalSingleton = new JournalStore(storage || (typeof localStorage !== 'undefined' ? localStorage : undefined));
+  }
+  return journalSingleton;
+}
+
