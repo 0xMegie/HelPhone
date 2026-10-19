@@ -54,6 +54,15 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
+  // #742: Skip caching for HMR and dev server requests to avoid stale-while-revalidate
+  if (
+    url.searchParams.has("t") || // Vite HMR timestamp query
+    /\/@vite\//.test(url.pathname) || // Vite HMR module
+    /\.hmr(?:\.json)?$/.test(url.pathname) // HMR manifest
+  ) {
+    return; // Let fetch proceed normally, don't cache
+  }
+
   if (
     request.method === "GET" &&
     url.origin === self.location.origin &&

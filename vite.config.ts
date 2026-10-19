@@ -243,6 +243,13 @@ export default defineConfig(({ mode }) => ({
       "Cross-Origin-Opener-Policy": "same-origin",
       "Cross-Origin-Embedder-Policy": "credentialless",
     },
+    hmr: {
+      // #742: Explicit HMR config prevents stale-cache issues with service worker
+      protocol: "ws",
+      host: "localhost",
+      port: 3000,
+      timeout: 5000,
+    },
     proxy: {
       "/zk": {
         target: "http://127.0.0.1:3001",

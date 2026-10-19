@@ -1,29 +1,33 @@
 import i18n from 'i18next'
-import HttpBackend from 'i18next-http-backend'
 import { initReactI18next } from 'react-i18next'
 
 export const SUPPORTED_LANGUAGES = ['en', 'ar'] as const
 export const DEFAULT_LNG = 'en'
 export const DEFAULT_NS = 'common'
 
-const ready = i18n
-  .use(HttpBackend)
-  .use(initReactI18next)
-  .init({
-    lng: DEFAULT_LNG,
-    fallbackLng: DEFAULT_LNG,
-    supportedLngs: [...SUPPORTED_LANGUAGES],
-    nonExplicitSupportedLngs: true,
-    load: 'languageOnly',
-    defaultNS: DEFAULT_NS,
-    ns: [DEFAULT_NS],
-    backend: {
-      loadPath: '/locales/{{lng}}/{{ns}}.json',
-      requestOptions: { cache: 'no-cache' },
-    },
-    interpolation: { escapeValue: false },
-    react: { useSuspense: false },
-  })
+const ready = (async () => {
+  // Lazy-load HttpBackend to reduce initial bundle (#744)
+  const { default: HttpBackend } = await import('i18next-http-backend')
+
+  return i18n
+    .use(HttpBackend)
+    .use(initReactI18next)
+    .init({
+      lng: DEFAULT_LNG,
+      fallbackLng: DEFAULT_LNG,
+      supportedLngs: [...SUPPORTED_LANGUAGES],
+      nonExplicitSupportedLngs: true,
+      load: 'languageOnly',
+      defaultNS: DEFAULT_NS,
+      ns: [DEFAULT_NS],
+      backend: {
+        loadPath: '/locales/{{lng}}/{{ns}}.json',
+        requestOptions: { cache: 'no-cache' },
+      },
+      interpolation: { escapeValue: false },
+      react: { useSuspense: false },
+    })
+})()
 
 function syncDocumentLocale(language: string): void {
   if (typeof document === 'undefined') return
