@@ -132,3 +132,87 @@ export function parseFederatedEvent(
   };
 }
 
+export interface ClockGap {
+  id?: string;
+  doc_id: string;
+  client_id: string;
+  expected_clock: number;
+  received_clock: number;
+  gap_size: number;
+  detected_at: number;
+  resolved: boolean;
+}
+
+const docClockMap = new Map<string, number>();
+const gapLog: ClockGap[] = [];
+
+export function resetGapDetector(): void {
+  docClockMap.clear();
+  gapLog.length = 0;
+}
+
+/**
+ * Detect gaps in per-doc / per-client clock sequences to prevent silent dropped operations.
+ */
+export function detectClockGap(
+  docId: string,
+  clientId: string,
+  clock: number
+): { hasGap: boolean; expectedClock: number; gap?: ClockGap } {
+  const key = `${docId}:${clientId}`;
+  const lastClock = docClockMap.get(key) ?? 0;
+
+  if (clock > lastClock + 1) {
+    const gap: ClockGap = {
+      doc_id: docId,
+      client_id: clientId,
+      expected_clock: lastClock + 1,
+      received_clock: clock,
+      gap_size: clock - (lastClock + 1),
+      detected_at: Date.now(),
+      resolved: false,
+    };
+    gapLog.push(gap);
+    docClockMap.set(key, clock);
+    return { hasGap: true, expectedClock: lastClock + 1, gap };
+  }
+
+  if (clock > lastClock) {
+    docClockMap.set(key, clock);
+  }
+
+  return { hasGap: false, expectedClock: lastClock + 1 };
+}
+
+export function getIndexerGaps(): ClockGap[] {
+  return [...gapLog];
+}
+
+export function getUnresolvedGaps(): ClockGap[] {
+  return gapLog.filter((g) => !g.resolved);
+}
+
+export function resolveGap(docId: string, clientId: string, clock: number): boolean {
+  let resolvedAny = false;
+  for (const gap of gapLog) {
+    if (gap.doc_id === docId && gap.client_id === clientId && !gap.resolved) {
+      if (clock >= gap.expected_clock && clock < gap.received_clock) {
+        gap.resolved = true;
+        resolvedAny = true;
+      }
+    }
+  }
+  return resolvedAny;
+}
+
+export async function persistGapToDb(
+  client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
+  gap: ClockGap
+): Promise<void> {
+  await client.query(
+    `INSERT INTO indexer_gap_log (doc_id, client_id, expected_clock, received_clock, gap_size, resolved)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [gap.doc_id, gap.client_id, gap.expected_clock, gap.received_clock, gap.gap_size, gap.resolved]
+  );
+}
+

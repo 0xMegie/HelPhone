@@ -33,7 +33,7 @@ import { installWorkerHooks, isKilled, setQueueStats, workerFlagVersion, handleF
  * Reported on every heartbeat/result so the server can estimate RUM that
  * never arrived instead of treating silence as health.
  */
-export const gapCounters = { droppedBatches: 0, unflushedEvents: 0, killedWrites: 0 };
+export const gapCounters = { droppedBatches: 0, unflushedEvents: 0, killedWrites: 0, droppedTelemetry: 0 };
 
 const now = () =>
   typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -197,6 +197,7 @@ export async function runWriter(config, sinkOverride) {
     shed,
     unfinished,
     gap: { ...gapCounters },
+    dropped_telemetry: gapCounters.droppedTelemetry,
     flagVersion: workerFlagVersion(),
     errors,
     quotaError,

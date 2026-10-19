@@ -6,13 +6,27 @@
  */
 import { Router, Request, Response } from 'express';
 import type { ParsedEvent, CustodyMarker } from '../indexer/parser.js';
+import { getHistoryConn, getReplicationLagMs, getAsOfLsn } from '../db/connection.js';
 
 const router = Router();
 
 // In-memory event store fallback / cache for fast access and federated testing
-const eventHistoryStore: ParsedEvent[] = [];
+const eventHistoryStore: (ParsedEvent & { id?: string | number; server_seq?: number; status?: string; created_at?: string })[] = [];
+let globalHistorySeq = 0;
 
-export function recordHistoryEvent(event: ParsedEvent): void {
+export function recordHistoryEvent(event: ParsedEvent & { id?: string | number; server_seq?: number; status?: string; created_at?: string }): void {
+  if (!event.server_seq) {
+    event.server_seq = ++globalHistorySeq;
+  }
+  if (!event.id) {
+    event.id = event.requestId || `evt-${event.server_seq}`;
+  }
+  if (!event.status) {
+    event.status = event.eventType === 'created' ? 'en-route' : event.eventType === 'resolved' ? 'delivered' : 'active';
+  }
+  if (!event.created_at) {
+    event.created_at = event.timestamp ? new Date(event.timestamp).toISOString() : new Date().toISOString();
+  }
   eventHistoryStore.push(event);
   if (eventHistoryStore.length > 5000) {
     eventHistoryStore.shift();
@@ -25,7 +39,110 @@ export function getHistoryEvents(): ParsedEvent[] {
 
 export function clearHistoryEvents(): void {
   eventHistoryStore.length = 0;
+  globalHistorySeq = 0;
 }
+
+export function encodeCursor(seq: number, id: string | number): string {
+  return Buffer.from(`${seq}:${id}`).toString('base64url');
+}
+
+export function decodeCursor(cursorStr: string): { seq: number; id: string } | null {
+  try {
+    const raw = Buffer.from(cursorStr, 'base64url').toString('utf8');
+    const idx = raw.indexOf(':');
+    if (idx !== -1) {
+      const seq = parseInt(raw.slice(0, idx), 10);
+      const id = raw.slice(idx + 1);
+      if (Number.isFinite(seq)) return { seq, id };
+    }
+  } catch {}
+  return null;
+}
+
+// Attach lag and LSN headers to every history response
+router.use(async (_req: Request, res: Response, next) => {
+  try {
+    const lagMs = await getReplicationLagMs();
+    const asOfLsn = await getAsOfLsn();
+    res.setHeader('X-Replica-Lag-Ms', String(Math.round(lagMs)));
+    res.setHeader('X-As-Of-LSN', asOfLsn);
+  } catch {}
+  next();
+});
+
+/**
+ * GET /api/history
+ * Keyset cursor pagination over timeline / dispatch log.
+ */
+router.get('/', async (req: Request, res: Response) => {
+  const conn = await getHistoryConn(10000);
+  try {
+    res.setHeader('X-Replica-Lag-Ms', String(Math.round(conn.lagMs)));
+    res.setHeader('X-As-Of-LSN', conn.asOfLsn);
+
+    if (conn.isStale) {
+      res.setHeader('Retry-After', '5');
+      return res.status(209).json({
+        stale: true,
+        lagMs: conn.lagMs,
+        asOfLsn: conn.asOfLsn,
+        error: 'Replica replication lag exceeds 10s budget and primary reserve is unavailable',
+      });
+    }
+
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
+    const cursor = typeof req.query.cursor === 'string' ? decodeCursor(req.query.cursor) : null;
+
+    if (conn.client && typeof conn.client.query === 'function') {
+      try {
+        let querySql = 'SELECT * FROM dispatch_log ';
+        const params: unknown[] = [];
+        if (cursor) {
+          querySql += 'WHERE (server_seq > $1 OR (server_seq = $1 AND id > $2)) ';
+          params.push(cursor.seq, cursor.id);
+        }
+        querySql += `ORDER BY server_seq ASC, id ASC LIMIT $${params.length + 1}`;
+        params.push(limit);
+
+        const result = await conn.client.query(querySql, params);
+        if (Array.isArray(result?.rows) && result.rows.length > 0) {
+          const rows = result.rows as any[];
+          const last = rows[rows.length - 1];
+          const nextCursor = rows.length === limit ? encodeCursor(Number(last.server_seq || 0), last.id) : null;
+          if (nextCursor) res.setHeader('X-Next-Cursor', nextCursor);
+          return res.json(rows);
+        }
+      } catch {
+        // Fall back to in-memory store
+      }
+    }
+
+    let items = [...eventHistoryStore];
+    items.sort((a: any, b: any) => {
+      const seqA = a.server_seq || 0;
+      const seqB = b.server_seq || 0;
+      if (seqA !== seqB) return seqA - seqB;
+      return String(a.id || '').localeCompare(String(b.id || ''));
+    });
+
+    if (cursor) {
+      items = items.filter((e: any) => {
+        const s = e.server_seq || 0;
+        const id = String(e.id || '');
+        return s > cursor.seq || (s === cursor.seq && id > cursor.id);
+      });
+    }
+
+    const paged = items.slice(0, limit);
+    const lastItem: any = paged[paged.length - 1];
+    const nextCursor = lastItem && paged.length === limit ? encodeCursor(lastItem.server_seq || 0, lastItem.id || '') : null;
+    if (nextCursor) res.setHeader('X-Next-Cursor', nextCursor);
+
+    return res.json(paged);
+  } finally {
+    conn.release();
+  }
+});
 
 /**
  * GET /api/history/events
@@ -33,7 +150,21 @@ export function clearHistoryEvents(): void {
  * Query events with pagination, origin filtering, and custody demarcation.
  */
 router.get('/events', async (req: Request, res: Response) => {
+  const conn = await getHistoryConn(10000);
   try {
+    res.setHeader('X-Replica-Lag-Ms', String(Math.round(conn.lagMs)));
+    res.setHeader('X-As-Of-LSN', conn.asOfLsn);
+
+    if (conn.isStale) {
+      res.setHeader('Retry-After', '5');
+      return res.status(209).json({
+        stale: true,
+        lagMs: conn.lagMs,
+        asOfLsn: conn.asOfLsn,
+        error: 'Replica replication lag exceeds 10s budget and primary reserve is unavailable',
+      });
+    }
+
     const {
       type,
       origin_instance,
@@ -41,11 +172,12 @@ router.get('/events', async (req: Request, res: Response) => {
       include_foreign = 'true',
       page = '0',
       limit = '50',
+      cursor: cursorParam,
     } = req.query;
 
     const pageNum = Math.max(0, parseInt(page as string, 10) || 0);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string, 10) || 50));
-    const offset = pageNum * limitNum;
+    const limitNum = Math.min(500, Math.max(1, parseInt(limit as string, 10) || 50));
+    const cursor = typeof cursorParam === 'string' ? decodeCursor(cursorParam) : null;
 
     let filtered = [...eventHistoryStore];
 
@@ -67,9 +199,22 @@ router.get('/events', async (req: Request, res: Response) => {
       filtered = filtered.filter((e) => e.custodyMarker === custody_marker);
     }
 
-    filtered.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    if (cursor) {
+      filtered.sort((a: any, b: any) => (a.server_seq || 0) - (b.server_seq || 0));
+      filtered = filtered.filter((e: any) => {
+        const s = e.server_seq || 0;
+        const id = String(e.id || '');
+        return s > cursor.seq || (s === cursor.seq && id > cursor.id);
+      });
+    } else {
+      filtered.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    }
 
+    const offset = cursor ? 0 : pageNum * limitNum;
     const paged = filtered.slice(offset, offset + limitNum);
+    const lastItem: any = paged[paged.length - 1];
+    const nextCursor = lastItem && paged.length === limitNum ? encodeCursor(lastItem.server_seq || 0, lastItem.id || '') : null;
+    if (nextCursor) res.setHeader('X-Next-Cursor', nextCursor);
 
     res.json({
       events: paged,
@@ -78,11 +223,16 @@ router.get('/events', async (req: Request, res: Response) => {
         limit: limitNum,
         total: filtered.length,
         hasMore: offset + limitNum < filtered.length,
+        nextCursor,
       },
+      lagMs: conn.lagMs,
+      asOfLsn: conn.asOfLsn,
     });
   } catch (error) {
     console.error('[History] Error querying events:', error);
     res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    conn.release();
   }
 });
 

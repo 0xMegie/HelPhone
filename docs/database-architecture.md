@@ -164,3 +164,86 @@ envVars:
   - key: DATABASE_URL
     sync: false
 ```
+
+---
+
+# Replication Lag, Lag-Tolerant Reads & Exactly-Once Projection (ISP-065)
+
+## 1. Replication Lag SLO & Load-Shedding Table
+
+During disaster spikes, bulk rejoin operations and telemetry heartbeats can drive 5k–10k writes/min on the primary, generating replica replay lags from 30s to 180s. To prevent phantom stale reads, double-dispatch, and pool exhaustion, the read/write layer enforces strict routing:
+
+| Replay Lag | History Read Routing | Telemetry Ingestion | DDL Migrations | Background Maintenance | UI Demarcation |
+|---|---|---|---|---|---|
+| **≤ 10,000 ms** (Normal) | Read replica | Normal direct write | Allowed | Scheduled ANALYZE / Vacuum | Normal display |
+| **10,000 – 30,000 ms** (Lagging) | Fallback to **primary-reserve** (max 5 conns); if exhausted, return **HTTP 209 Stale** with `Retry-After: 5` | Normal direct write | Block non-urgent DDL (>15s) | Maintenance continues | **`⚠️ Stale ~Xs`** badge |
+| **> 30,000 ms** (Severe Lag) | HTTP 209 Stale (or primary reserve) | **Shed to Redis buffer** (`redisPubSub.js`) | Block all non-urgent DDL | **Paused** (skips pass) | Stale badge + dispatch confirm override required |
+
+### Headers Emitted on Every Read
+
+Every response from `/api/history` contains:
+- `X-Replica-Lag-Ms`: Replay lag in milliseconds (sampled with 1s cache).
+- `X-As-Of-LSN`: Log Sequence Number of the current replica replay position.
+- `X-Next-Cursor`: Keyset cursor for the subsequent page.
+
+## 2. Monotonic History: Keyset Cursor Pagination
+
+`LIMIT / OFFSET` pagination across moving replication boundaries produces phantom holes and duplicate rows. HelPhone enforces keyset cursor pagination:
+
+```sql
+SELECT id, server_seq, op_id, status, details, created_at
+FROM dispatch_log
+WHERE (server_seq, id) > ($cursor_seq, $cursor_id)
+ORDER BY server_seq ASC, id ASC
+LIMIT $limit;
+```
+
+Cursors are base64-encoded strings: `${server_seq}:${id}`.
+- Paginating across partition boundaries guarantees zero row skips and zero duplicate rows even while catch-up replay moves the replica snapshot.
+
+## 3. Transactional Exactly-Once Indexer (`server/indexer/exporter.ts`)
+
+To prevent replay duplicates or dropped batches across daemon restarts and failovers:
+1. **Advisory Lock Singleton:** Exporter acquires `pg_advisory_xact_lock(hashtext('exporter'))` inside the transaction.
+2. **Single Transaction Boundary:**
+   ```sql
+   BEGIN;
+   SELECT pg_advisory_xact_lock(hashtext('exporter'));
+
+   -- Idempotent projection
+   INSERT INTO dispatch_log (doc_id, client_id, clock, op_id, status, details)
+   VALUES ($1, $2, $3, $4, $5, $6)
+   ON CONFLICT (doc_id, client_id, clock) DO NOTHING;
+
+   -- Checkpoint committed atomically with projection
+   INSERT INTO indexer_checkpoint (component, last_lsn, last_seq, updated_at)
+   VALUES ('exporter', $lsn, $seq, NOW())
+   ON CONFLICT (component) DO UPDATE
+     SET last_lsn = EXCLUDED.last_lsn,
+         last_seq = EXCLUDED.last_seq,
+         updated_at = NOW();
+
+   COMMIT;
+   ```
+3. **Parser Gap Detector (`server/indexer/parser.ts`):** Validates monotonic per-client clock sequences. Any non-contiguous clock step records an event in `indexer_gap_log` and triggers an out-of-band backfill request rather than silently dropping batches.
+
+## 4. Runbook: Replication Slot Bloat Break-Glass
+
+When logical replication lag exceeds 10 minutes sustained and disk consumption on the primary WAL partition crosses 80%:
+
+1. **Verify Lag and Slot Retained Size:**
+   ```sql
+   SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained
+   FROM pg_replication_slots;
+   ```
+2. **Confirm Two-Person Approval:** Break-glass slot dropping requires authorization from two maintainers as documented in CODEOWNERS.
+3. **Drop Slot:**
+   ```sql
+   SELECT pg_drop_replication_slot('history_replica_slot');
+   ```
+4. **Trigger Replica Reseed:**
+   - Put read routing into primary-reserve mode (`FORCE_PRIMARY_HISTORY=true`).
+   - Run pg_basebackup or snapshot restore to recreate replica.
+   - Recreate slot: `SELECT pg_create_logical_replication_slot('history_replica_slot', 'pgoutput');`.
+   - Re-enable replica routing once replay lag falls under 10s.
+

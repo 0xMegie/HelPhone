@@ -128,6 +128,110 @@ export async function pingDatabase(timeoutMs = 2000): Promise<{ ok: boolean; lat
   }
 }
 
+let mockReplicationLagMs: number | null = null;
+let mockAsOfLsn: string | null = null;
+let cachedLagMs = 0;
+let lastLagCheckAt = 0;
+
+export function setMockReplicationLag(ms: number | null): void {
+  mockReplicationLagMs = ms;
+}
+
+export function setMockAsOfLsn(lsn: string | null): void {
+  mockAsOfLsn = lsn;
+}
+
+export async function getReplicationLagMs(): Promise<number> {
+  if (mockReplicationLagMs !== null) return mockReplicationLagMs;
+  const now = Date.now();
+  if (now - lastLagCheckAt < 1000) return cachedLagMs;
+
+  try {
+    const res = await query(`
+      SELECT COALESCE(
+        EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp())) * 1000,
+        0
+      ) AS lag_ms
+    `);
+    const val = Number((res.rows[0] as Record<string, unknown>)?.lag_ms);
+    cachedLagMs = Number.isFinite(val) ? Math.max(0, val) : 0;
+  } catch {
+    cachedLagMs = 0;
+  }
+  lastLagCheckAt = now;
+  return cachedLagMs;
+}
+
+export async function getAsOfLsn(): Promise<string> {
+  if (mockAsOfLsn !== null) return mockAsOfLsn;
+  try {
+    const res = await query(`
+      SELECT COALESCE(
+        pg_last_wal_replay_lsn()::text,
+        pg_current_wal_lsn()::text,
+        '0/0'
+      ) AS lsn
+    `);
+    const lsn = String((res.rows[0] as Record<string, unknown>)?.lsn || '0/0');
+    return lsn;
+  } catch {
+    return '0/0';
+  }
+}
+
+export interface HistoryConnectionResult {
+  client: import('./poolManager.js').PooledClient | null;
+  isReplica: boolean;
+  isReserve: boolean;
+  isStale: boolean;
+  lagMs: number;
+  asOfLsn: string;
+  release: () => void;
+}
+
+export async function getHistoryConn(lagBudgetMs = 10000): Promise<HistoryConnectionResult> {
+  const lagMs = await getReplicationLagMs();
+  const asOfLsn = await getAsOfLsn();
+
+  if (lagMs <= lagBudgetMs) {
+    const client = await getClient();
+    return {
+      client,
+      isReplica: true,
+      isReserve: false,
+      isStale: false,
+      lagMs,
+      asOfLsn,
+      release: () => releaseClient(client),
+    };
+  }
+
+  // Lag exceeds budget: fallback to primary reserve (up to 5 conns)
+  try {
+    const reserveClient = await getPool().acquirePrimaryReserve(1000);
+    return {
+      client: reserveClient,
+      isReplica: false,
+      isReserve: true,
+      isStale: false,
+      lagMs,
+      asOfLsn,
+      release: () => getPool().releasePrimaryReserve(reserveClient),
+    };
+  } catch {
+    // Reserve exhausted: stale response
+    return {
+      client: null,
+      isReplica: false,
+      isReserve: false,
+      isStale: true,
+      lagMs,
+      asOfLsn,
+      release: () => {},
+    };
+  }
+}
+
 export default {
   getPool,
   query,

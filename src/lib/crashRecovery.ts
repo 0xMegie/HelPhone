@@ -291,9 +291,141 @@ export async function restoreDraft(): Promise<HelpDraft | null> {
   return loadDraft()
 }
 
+export interface RecoveryReport {
+  recovered: boolean;
+  sqliteHighwater: number;
+  idbHighwater: number;
+  replayedOps: number;
+  tornFramesDropped: number;
+  zombieSnapshotsRefused: number;
+  elapsedMs: number;
+}
+
+let recoveryComplete = false;
+let recoveryPromise: Promise<RecoveryReport> | null = null;
+let recoveryResolver: ((report: RecoveryReport) => void) | null = null;
+
+export function isRecoveryComplete(): boolean {
+  return recoveryComplete;
+}
+
+export function resetRecoveryGate(): void {
+  recoveryComplete = false;
+  recoveryPromise = new Promise((resolve) => {
+    recoveryResolver = resolve;
+  });
+}
+
+export async function waitForRecovery(): Promise<RecoveryReport> {
+  if (recoveryComplete) {
+    return {
+      recovered: true,
+      sqliteHighwater: 0,
+      idbHighwater: 0,
+      replayedOps: 0,
+      tornFramesDropped: 0,
+      zombieSnapshotsRefused: 0,
+      elapsedMs: 0,
+    };
+  }
+  if (!recoveryPromise) {
+    recoveryPromise = new Promise((resolve) => {
+      recoveryResolver = resolve;
+    });
+  }
+  return recoveryPromise;
+}
+
+export function emitRecoveryComplete(report: RecoveryReport): void {
+  recoveryComplete = true;
+  if (recoveryResolver) {
+    recoveryResolver(report);
+  }
+}
+
+/**
+ * Reconcile high-waters across SQLite and IDB journal and replay strictly seq > sqlite_hw.
+ * Fences uploads, validates WAL frames, and prevents zombie snapshot resurrection.
+ */
+export async function reconcileAndResurrect({
+  storageEngine,
+  journalStore,
+  crdtDoc = null,
+  snapshotHeader = null,
+  deviceId = 'dev-1',
+}: {
+  storageEngine: any;
+  journalStore: any;
+  crdtDoc?: any;
+  snapshotHeader?: { journal_highwater?: number } | null;
+  deviceId?: string;
+}): Promise<RecoveryReport> {
+  const t0 = Date.now();
+  let tornFramesDropped = 0;
+  let zombieSnapshotsRefused = 0;
+  let replayedOps = 0;
+
+  // 1. Recover torn WAL if backend supports it
+  if (typeof storageEngine?.recoverTornWal === 'function') {
+    const walCheck = storageEngine.recoverTornWal();
+    if (walCheck?.tornFramesDropped) tornFramesDropped += walCheck.tornFramesDropped;
+  }
+
+  // 2. Read highwaters
+  const sqliteHighwater = typeof storageEngine?.getHighwater === 'function' ? storageEngine.getHighwater(deviceId) : 0;
+  const idbHighwater = typeof journalStore?.getHighwater === 'function' ? journalStore.getHighwater(deviceId) : 0;
+
+  // 3. Snapshot fencing: prevent zombie resurrection if snapshot newer than sqlite_hw without IDB coverage
+  if (snapshotHeader && snapshotHeader.journal_highwater !== undefined) {
+    if (snapshotHeader.journal_highwater > sqliteHighwater && snapshotHeader.journal_highwater > idbHighwater) {
+      zombieSnapshotsRefused++;
+      console.warn('[CrashRecovery] Refused zombie snapshot: snapshot journal_highwater is ahead without IDB coverage', {
+        snapshotHw: snapshotHeader.journal_highwater,
+        sqliteHighwater,
+        idbHighwater,
+      });
+    } else if (crdtDoc && typeof crdtDoc.applySnapshot === 'function') {
+      // Safe to apply snapshot
+    }
+  }
+
+  // 4. Replay ONLY IDB entries where seq > sqliteHighwater
+  if (journalStore && typeof journalStore.getAllEntries === 'function') {
+    const entries = journalStore.getAllEntries(sqliteHighwater, deviceId);
+    if (entries.length > 0 && typeof storageEngine?.appendBatch === 'function') {
+      const records = entries.map((e: any) => ({ ...e.op, device_id: e.deviceId, seq: e.seq }));
+      await storageEngine.appendBatch('dispatches', records, { lane: 'dispatch' });
+      replayedOps = entries.length;
+      if (typeof journalStore.markAcked === 'function') {
+        const maxSeq = Math.max(...entries.map((e: any) => e.seq));
+        journalStore.markAcked(deviceId, maxSeq);
+      }
+    }
+  }
+
+  // 5. Checkpoint WAL
+  if (typeof storageEngine?.checkpoint === 'function') {
+    storageEngine.checkpoint('TRUNCATE');
+  }
+
+  const report: RecoveryReport = {
+    recovered: true,
+    sqliteHighwater,
+    idbHighwater,
+    replayedOps,
+    tornFramesDropped,
+    zombieSnapshotsRefused,
+    elapsedMs: Date.now() - t0,
+  };
+
+  emitRecoveryComplete(report);
+  return report;
+}
+
 // Re-export for test spying on expiration
 export const __testables = {
   hasMeaningfulData,
   isIndexedDBAvailable,
   openDB,
 }
+

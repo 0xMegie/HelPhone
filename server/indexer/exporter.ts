@@ -146,3 +146,109 @@ export function loadLatestSnapshot(outputDir = './snapshots'): ContractStateSnap
   const content = readFileSync(latestFile, 'utf-8')
   return JSON.parse(content) as ContractStateSnapshot
 }
+
+export interface DispatchLogOp {
+  op_id: string;
+  doc_id: string;
+  client_id: string;
+  clock: number;
+  server_seq?: number;
+  device_id?: string;
+  seq?: number;
+  status?: string;
+  team?: string;
+  payload?: any;
+  created_at?: string;
+}
+
+export interface CheckpointInfo {
+  last_lsn: string;
+  last_seq: number;
+  updated_at?: string;
+}
+
+export interface QueryRunner {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+}
+
+/**
+ * Projects a batch of dispatch ops into `dispatch_log` and advances `indexer_checkpoint`
+ * within a single atomic transaction protected by an advisory transaction lock.
+ */
+export async function projectDispatchBatch(
+  client: QueryRunner,
+  ops: DispatchLogOp[],
+  checkpoint: { lsn: string; seq: number }
+): Promise<{ projectedCount: number; duplicateCount: number }> {
+  await client.query('BEGIN');
+  try {
+    // Acquire advisory xact lock for the exporter singleton
+    try {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('exporter'))");
+    } catch {
+      // Mock / non-Postgres test environments may not implement advisory locks
+    }
+
+    let projectedCount = 0;
+    let duplicateCount = 0;
+
+    for (const op of ops) {
+      const res = await client.query(
+        `INSERT INTO dispatch_log (op_id, doc_id, client_id, clock, server_seq, device_id, seq, status, team, payload)
+         VALUES ($1, $2, $3, $4, COALESCE($5, 0), $6, $7, $8, $9, $10)
+         ON CONFLICT (doc_id, client_id, clock) DO NOTHING
+         RETURNING id`,
+        [
+          op.op_id,
+          op.doc_id,
+          op.client_id,
+          op.clock,
+          op.server_seq ?? null,
+          op.device_id ?? null,
+          op.seq ?? null,
+          op.status || 'en-route',
+          op.team ?? null,
+          JSON.stringify(op.payload ?? {}),
+        ]
+      );
+
+      if (res.rows && res.rows.length > 0) {
+        projectedCount++;
+      } else {
+        duplicateCount++;
+      }
+    }
+
+    // Record checkpoint in the EXACT SAME transaction
+    await client.query(
+      `INSERT INTO indexer_checkpoint (id, last_lsn, last_seq, updated_at)
+       VALUES (1, $1, $2, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         last_lsn = EXCLUDED.last_lsn,
+         last_seq = EXCLUDED.last_seq,
+         updated_at = NOW()`,
+      [checkpoint.lsn, checkpoint.seq]
+    );
+
+    await client.query('COMMIT');
+    return { projectedCount, duplicateCount };
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  }
+}
+
+export async function getIndexerCheckpoint(client: QueryRunner): Promise<CheckpointInfo | null> {
+  try {
+    const res = await client.query('SELECT last_lsn, last_seq, updated_at FROM indexer_checkpoint WHERE id = 1');
+    if (res.rows && res.rows.length > 0) {
+      const row = res.rows[0] as any;
+      return {
+        last_lsn: String(row.last_lsn || '0/0'),
+        last_seq: Number(row.last_seq || 0),
+        updated_at: row.updated_at,
+      };
+    }
+  } catch {}
+  return null;
+}

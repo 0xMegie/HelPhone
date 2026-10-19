@@ -72,8 +72,15 @@ export async function runMaintenance(deps = {}) {
     return { skipped: "outside-window", tables: [] };
   }
   if (running) return { skipped: "already-running", tables: [] };
+
   running = true;
   try {
+    const { getReplicationLagMs } = await import("./connection.js");
+    const lagMs = await getReplicationLagMs();
+    if (lagMs > 30000) {
+      log("[db-maintenance] paused due to replication lag > 30s", { lagMs });
+      return { skipped: "replication-lag", tables: [] };
+    }
     const exec = async (fn) =>
       deps.query
         ? fn(deps.query)
