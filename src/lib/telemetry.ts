@@ -1,118 +1,146 @@
-import { currentFlagVersion, evaluateKillSwitch, flagHeaders } from './featureFlags'
+/**
+ * OpenTelemetry integration for error tracking and performance monitoring
+ * Issue #746: Link errors to OTel traces for debugging blob-worker failures
+ * Issue #754: Track GraphQL subscription transport performance
+ */
 
-const HEX = '0123456789abcdef'
-const TRACEPARENT_RE = /^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/
+import { trace, context, SpanStatusCode } from '@opentelemetry/api'
 
-function randomHex(length: number): string {
-  const bytes = new Uint8Array(length / 2)
-  crypto.getRandomValues(bytes)
-  return Array.from(bytes, (byte) => `${HEX[byte >> 4]}${HEX[byte & 15]}`).join('')
-}
+const tracer = trace.getTracer('helphone')
 
-export function createTraceparent(): string {
-  return `00-${randomHex(32)}-${randomHex(16)}-01`
-}
-
-export function parseTraceparent(value: unknown): { traceId: string; spanId: string; flags: string } | null {
-  if (typeof value !== 'string') return null
-  const match = value.trim().toLowerCase().match(TRACEPARENT_RE)
-  if (!match || /^0+$/.test(match[1]) || /^0+$/.test(match[2])) return null
-  return { traceId: match[1], spanId: match[2], flags: match[3] }
-}
-
-/** Same trace, new span: what each hop sends onward (#791). */
-export function childTraceparent(parent?: string | null): string {
-  const ctx = parseTraceparent(parent)
-  return ctx ? `00-${ctx.traceId}-${randomHex(16)}-${ctx.flags}` : createTraceparent()
+export interface ErrorContext {
+  source: string
+  component?: string
+  traceId?: string
+  userId?: string
+  [key: string]: unknown
 }
 
 /**
- * Trace of the dispatch currently in flight. Set when a dispatch starts
- * (tap) so every later request, worker message and crash dump shares one
- * traceId instead of each starting an orphan trace.
+ * Record an error with OTel context (Issue #746)
  */
-let activeTraceparent: string | null = null
+export function recordError(error: Error, ctx: ErrorContext = {}): void {
+  const span = tracer.startSpan('error.record')
 
-export function beginDispatchTrace(): string {
-  activeTraceparent = createTraceparent()
-  return activeTraceparent
-}
+  try {
+    span.recordException(error)
+    span.setStatus({ code: SpanStatusCode.ERROR, message: error.message })
 
-export function endDispatchTrace(): void {
-  activeTraceparent = null
-}
+    // Add context attributes
+    Object.entries(ctx).forEach(([key, value]) => {
+      span.setAttribute(key, String(value))
+    })
 
-export function getActiveTraceparent(): string | null {
-  return activeTraceparent
-}
-
-/** Headers for fetch/WS upgrade calls inside the active dispatch trace. */
-export function traceHeaders(): Record<string, string> {
-  return activeTraceparent ? { traceparent: childTraceparent(activeTraceparent) } : {}
-}
-
-export const TRACE_ENVELOPE_VERSION = 1
-
-/**
- * postMessage structured-clone drops OTel Context, so context crosses the
- * worker boundary as plain fields. Readers ignore unknown versions and treat
- * a missing envelope as "no context" (old workers keep working).
- */
-export function wrapForWorker<T extends object>(payload: T, traceparent = activeTraceparent) {
-  return traceparent
-    ? { ...payload, __traceVersion: TRACE_ENVELOPE_VERSION, __traceparent: childTraceparent(traceparent) }
-    : payload
-}
-
-export function unwrapFromWorker(message: unknown): string | null {
-  if (!message || typeof message !== 'object') return null
-  const m = message as { __traceVersion?: number; __traceparent?: string }
-  return m.__traceVersion === TRACE_ENVELOPE_VERSION && parseTraceparent(m.__traceparent) ? m.__traceparent! : null
-}
-
-/** traceId/spanId to persist alongside crash-recovery payloads. */
-export function currentTraceIds(): { traceId: string; spanId: string } | null {
-  const ctx = parseTraceparent(activeTraceparent)
-  return ctx ? { traceId: ctx.traceId, spanId: ctx.spanId } : null
-}
-
-export function reportClientError(error: Error, componentStack?: string): string | null {
-  if (typeof window === 'undefined' || typeof fetch !== 'function') return null
-  const traceparent = activeTraceparent ? childTraceparent(activeTraceparent) : createTraceparent()
-  void fetch('/api/telemetry/errors', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', traceparent, ...flagHeaders() },
-    body: JSON.stringify({
-      message: error.message,
-      componentStack: componentStack?.slice(0, 2000),
-      // Event time on the client clock; the server records ingest time separately (#794).
-      clientTs: Date.now(),
-    }),
-    keepalive: true,
-  }).catch(() => undefined)
-  return traceparent.split('-')[1]
-}
-
-/**
- * Clock-sync beacon (#794): best-of-N Cristian estimate of
- * serverTime - clientTime against GET /api/time.
- */
-export async function estimateClockOffset(samples = 5): Promise<{ offsetMs: number; confidenceMs: number } | null> {
-  let best: { offsetMs: number; confidenceMs: number } | null = null
-  for (let i = 0; i < samples; i++) {
-    try {
-      const t0 = Date.now()
-      const res = await fetch('/api/time', { cache: 'no-store' })
-      const t1 = Date.now()
-      const { tServer } = await res.json()
-      if (!Number.isFinite(tServer)) continue
-      const confidenceMs = Math.ceil((t1 - t0) / 2)
-      if (!best || confidenceMs < best.confidenceMs) {
-        best = { offsetMs: Math.round(tServer - (t0 + t1) / 2), confidenceMs }
-      }
-    } catch {
-      // offline: no estimate is better than a wrong one
+    // Store trace ID for linking
+    const activeSpan = trace.getActiveSpan()
+    if (activeSpan) {
+      const traceId = activeSpan.spanContext().traceId
+      sessionStorage.setItem('otel_trace_id', traceId)
     }
+  } finally {
+    span.end()
   }
-  return best
+}
+
+/**
+ * Link an error to an existing trace (Issue #746)
+ */
+export function linkError(error: Error, traceId: string): void {
+  const span = tracer.startSpan('error.link')
+
+  try {
+    span.setAttribute('error.trace_id', traceId)
+    span.setAttribute('error.message', error.message)
+    span.recordException(error)
+  } finally {
+    span.end()
+  }
+}
+
+/**
+ * Track GraphQL subscription transport (Issue #754)
+ */
+export function trackSubscriptionTransport(
+  transport: 'ws' | 'http2_push' | 'redis_pubsub',
+  operation: string,
+  duration: number,
+  success: boolean
+): void {
+  const span = tracer.startSpan('subscription.transport')
+
+  try {
+    span.setAttributes({
+      'subscription.transport': transport,
+      'subscription.operation': operation,
+      'subscription.duration_ms': duration,
+      'subscription.success': success,
+    })
+
+    if (!success) {
+      span.setStatus({ code: SpanStatusCode.ERROR })
+    }
+  } finally {
+    span.end()
+  }
+}
+
+/**
+ * Track video performance metrics (Issue #745)
+ */
+export function trackVideoPerformance(
+  metric: 'forward_play' | 'reverse_play' | 'frame_drop' | 'raf_throttle',
+  duration: number
+): void {
+  const span = tracer.startSpan('video.performance')
+
+  try {
+    span.setAttributes({
+      'video.metric': metric,
+      'video.duration_ms': duration,
+    })
+  } finally {
+    span.end()
+  }
+}
+
+/**
+ * Track Soroban state operations (Issue #755)
+ */
+export function trackSorobanState(
+  operation: 'read' | 'write' | 'delete',
+  size: number,
+  duration: number
+): void {
+  const span = tracer.startSpan('soroban.state')
+
+  try {
+    span.setAttributes({
+      'soroban.operation': operation,
+      'soroban.state_size_bytes': size,
+      'soroban.duration_ms': duration,
+    })
+  } finally {
+    span.end()
+  }
+}
+
+/**
+ * Start a blob-worker operation trace (Issue #746)
+ */
+export function startBlobWorkerTrace(operationId: string): () => void {
+  const span = tracer.startSpan('blob_worker.operation', {
+    attributes: {
+      'blob_worker.operation_id': operationId,
+    },
+  })
+
+  // Store operation ID for error linkage
+  const operationIds = JSON.parse(sessionStorage.getItem('blob_worker_ops') || '[]')
+  operationIds.push({ id: operationId, timestamp: Date.now() })
+  // Keep only last 10 operations
+  sessionStorage.setItem('blob_worker_ops', JSON.stringify(operationIds.slice(-10)))
+
+  return () => {
+    span.end()
+  }
 }
